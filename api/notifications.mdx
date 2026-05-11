@@ -1,0 +1,196 @@
+---
+title: "Notifications API: in-app alerts and activity logs"
+description: "Reference for in-app notifications in UpdaterAgent TMS: list, read, and delete alerts, view user and action logs, and query the system audit trail."
+---
+
+The Notifications API lets each authenticated user retrieve and manage their own in-app alerts — such as load status changes, driver assignments, and system events. All notification endpoints are scoped to the currently authenticated user and require only a valid JWT; no additional permission is needed. Related controllers expose user activity logs, system action logs, and the auditable change trail for compliance purposes.
+
+## NotificationsController — `/api/notifications`
+
+In-app notification management. All endpoints require a valid JWT; no specific permission code is required beyond authentication.
+
+### GET /api/notifications
+
+List all notifications for the currently authenticated user, ordered by most recent first.
+
+**Required permission:** Authenticated (any valid JWT)
+
+```bash cURL
+curl https://your-domain.com/api/notifications \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+```json Response
+{
+  "items": [
+    {
+      "id": 201,
+      "title": "Load #1045 status changed",
+      "body": "Load 1045 has been marked as InTransit.",
+      "isRead": false,
+      "createdAt": "2026-05-11T09:15:00Z"
+    }
+  ],
+  "totalCount": 14,
+  "page": 1,
+  "pageSize": 20,
+  "totalPages": 1
+}
+```
+
+---
+
+### GET /api/notifications/\{id\}
+
+Retrieve the details of a single notification.
+
+**Required permission:** Authenticated
+
+<ParamField path="id" type="number" required>
+  The notification's database ID.
+</ParamField>
+
+**Response fields**
+
+<ResponseField name="id" type="number" required>
+  Notification ID.
+</ResponseField>
+
+<ResponseField name="title" type="string" required>
+  Short title of the notification.
+</ResponseField>
+
+<ResponseField name="body" type="string">
+  Full notification message body.
+</ResponseField>
+
+<ResponseField name="isRead" type="boolean" required>
+  Whether the user has read this notification.
+</ResponseField>
+
+<ResponseField name="createdAt" type="string" required>
+  ISO 8601 timestamp when the notification was created.
+</ResponseField>
+
+---
+
+### PUT /api/notifications/\{id\}/read
+
+Mark a single notification as read.
+
+**Required permission:** Authenticated
+
+<ParamField path="id" type="number" required>
+  The notification's database ID.
+</ParamField>
+
+```bash cURL
+curl -X PUT https://your-domain.com/api/notifications/201/read \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### PUT /api/notifications/read-all
+
+Mark all notifications for the current user as read in a single request.
+
+**Required permission:** Authenticated
+
+```bash cURL
+curl -X PUT https://your-domain.com/api/notifications/read-all \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### DELETE /api/notifications/\{id\}
+
+Delete a notification permanently for the current user.
+
+**Required permission:** Authenticated
+
+<ParamField path="id" type="number" required>
+  The notification's database ID.
+</ParamField>
+
+```bash cURL
+curl -X DELETE https://your-domain.com/api/notifications/201 \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+## User logs
+
+### UserLogsController — `/api/user-logs`
+
+Track user activity within the system. Useful for understanding how dispatchers and managers are using the application.
+
+| Method | Endpoint | Permission | Description |
+|--------|----------|------------|-------------|
+| GET | `/api/user-logs` | `UserLogs.View` | List all user activity logs |
+| GET | `/api/user-logs/{userId}` | `UserLogs.View` | Get logs for a specific user |
+
+```bash cURL
+curl https://your-domain.com/api/user-logs/5 \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### ActionLogsController — `/api/action-logs`
+
+System-level action logs record discrete operations performed by background jobs, webhooks, and integrations — separate from user-initiated actions.
+
+| Method | Endpoint | Permission | Description |
+|--------|----------|------------|-------------|
+| GET | `/api/action-logs` | `ActionLogs.View` | List all action logs |
+
+---
+
+## AuditLogsController — `/api/audit-logs`
+
+The audit log captures every create, update, and delete operation on important entities, recording the before and after state, the acting user, and the timestamp. Use this for compliance, debugging, and change tracking.
+
+**Required permission:** `AuditLogs.View`
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/audit-logs` | List audit log entries with filters |
+| GET | `/api/audit-logs/{id}` | Get a specific audit log entry |
+
+```bash cURL
+curl "https://your-domain.com/api/audit-logs?fromDate=2026-05-01&toDate=2026-05-11" \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+```json Response
+{
+  "items": [
+    {
+      "id": 5001,
+      "entityType": "Load",
+      "entityId": 1045,
+      "action": "Update",
+      "changedBy": 3,
+      "changedAt": "2026-05-10T14:22:00Z",
+      "changes": {
+        "status": { "from": "Dispatched", "to": "InTransit" }
+      }
+    }
+  ],
+  "totalCount": 112,
+  "page": 1,
+  "pageSize": 20,
+  "totalPages": 6
+}
+```
+
+<Note>
+  Telegram notifications are managed separately from in-app notifications. Configure Telegram group subscriptions via `/api/group-links` and control which events trigger Telegram messages via `/api/notification-settings`.
+</Note>
+
+<Info>
+  User-level notification preferences — such as which event types trigger in-app alerts — are stored at `/api/notification-settings`. Use `GET /api/notification-settings` to retrieve the current configuration and `PUT /api/notification-settings` to update it.
+</Info>

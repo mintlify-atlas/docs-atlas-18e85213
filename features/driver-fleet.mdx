@@ -1,0 +1,117 @@
+---
+title: "Driver and fleet management in UpdaterAgent TMS system"
+description: "Manage driver profiles, trucks, and trailers, track real-time ELD positions, configure sleep timers, and monitor stationary drivers in UpdaterAgent."
+---
+
+UpdaterAgent maintains a full roster of drivers, trucks, and trailers, each scoped to a company within the tenant. This page covers how driver profiles are structured, how fleet assets are managed, and how the system tracks driver activity during active loads.
+
+## Driver profiles
+
+Each driver record in UpdaterAgent has two distinct identifiers that serve different purposes:
+
+<Warning>
+**Driver ID convention (LR-1053):** `Driver.Id` (long) is the local database primary key and must be used for **all internal operations**, including stop assignments. `Driver.ImportId` (string) is the external TMS GUID from QuickManage and is used **only** for import and sync operations. `Stop.AssignedDriverIds` stores `Driver.Id.ToString()`, never `ImportId`.
+</Warning>
+
+| Property | Type | Description |
+|---|---|---|
+| `Id` | long | Local database PK — use for all internal references |
+| `ImportId` | string | External TMS GUID — used only during import/sync |
+| `Name` | string | Driver's full name |
+| `Phone` | string | Contact phone number |
+| `Status` | enum | Driver availability status |
+| `GroupLinkId` | long | Linked Telegram group for load notifications |
+
+## Trucks and trailers
+
+Trucks and trailers are managed independently and linked to loads and stops during dispatch.
+
+**Trucks** (`/api/trucks`) store fleet vehicle data imported from QuickManage. The `TruckNumber` field identifies the unit and `AssignedDriverIds` tracks which drivers are paired with the truck.
+
+**Trailers** (`/api/trailers`) store trailer data synced from the TMS. Trailers are associated with loads at dispatch time.
+
+Both entity types are imported automatically by the `tms-import:trucks` and `tms-import:trailers` background jobs, which run every 3 hours.
+
+## Driver assignment to loads and stops
+
+Drivers are assigned at the load level and propagated to individual stops:
+
+1. Call `POST /api/loads/{id}/assign-driver` with a valid `Driver.Id`
+2. The system uses **forward-fill logic** — the driver is applied to all subsequent unassigned stops
+3. `Stop.AssignedDriverIds` is updated to store `Driver.Id.ToString()`
+
+Driver assignments from QuickManage webhooks follow the same convention: the webhook processor looks up the driver by `Driver.ImportId`, then stores `Driver.Id` in the stop record.
+
+## Current driver position
+
+Driver position is sourced from ELD data. The system uses the most recent `EldPosition` record for the truck associated with the driver's active load.
+
+```http
+GET /api/drivers/{id}/current-position
+```
+
+Response includes latitude, longitude, speed, heading, and the timestamp of the last recorded position.
+
+## Sleep timer
+
+Dispatchers can start a sleep timer for a driver who needs a mandatory rest period. The `check:sleep-timer-expiry` background job runs every minute and alerts when the timer has expired.
+
+**Start a sleep timer:**
+
+```http
+POST /api/drivers/{id}/sleep-timer
+Content-Type: application/json
+
+{
+  "durationMinutes": 600
+}
+```
+
+**Cancel a sleep timer:**
+
+```http
+DELETE /api/drivers/{id}/sleep-timer
+```
+
+When a sleep timer expires, the system automatically:
+- Sends a Telegram message to the driver's group
+- Creates a high-priority ticket
+- Sends in-app notifications to the Updater department and the assigned dispatcher
+
+## Stationary driver detection
+
+The `check:stationary-driver` background job runs every 3 hours. It scans all loads currently in `InTransit` status, checks the driver's position against their recent ELD history, and sends an alert if the driver has not moved within the monitoring window.
+
+This check helps dispatchers identify drivers who may be delayed, resting without a timer, or experiencing a problem.
+
+## Key endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/drivers` | List drivers with pagination |
+| `GET` | `/api/drivers/{id}` | Get driver details |
+| `POST` | `/api/drivers` | Create a new driver |
+| `PUT` | `/api/drivers/{id}` | Update driver details |
+| `DELETE` | `/api/drivers/{id}` | Delete driver |
+| `GET` | `/api/drivers/{id}/loads` | Get loads assigned to a driver |
+| `GET` | `/api/drivers/{id}/current-position` | Get current driver position from ELD |
+| `POST` | `/api/drivers/{id}/sleep-timer` | Start a sleep timer |
+| `DELETE` | `/api/drivers/{id}/sleep-timer` | Cancel a sleep timer |
+| `GET` | `/api/trucks` | List trucks |
+| `GET` | `/api/trucks/{id}` | Get truck details |
+| `GET` | `/api/trailers` | List trailers |
+| `GET` | `/api/trailers/{id}` | Get trailer details |
+
+## Common scenarios
+
+<AccordionGroup>
+  <Accordion title="Assigning a driver to a load">
+    Use `POST /api/loads/{id}/assign-driver` with the `Driver.Id` (local database PK, not `ImportId`). The system applies forward-fill logic to assign the driver to all subsequent stops. Verify the assignment by calling `GET /api/loads/{id}` and inspecting the `AssignedDriverIds` on each stop.
+  </Accordion>
+  <Accordion title="Checking a driver's current position">
+    Call `GET /api/drivers/{id}/current-position`. This returns the latest `EldPosition` record for the truck associated with the driver. If the driver has no active load or no ELD data has been imported recently, the response will indicate no position is available. ELD positions are imported every 25 minutes by the `eld-import:positions` job.
+  </Accordion>
+  <Accordion title="Managing a sleep timer">
+    Start a timer with `POST /api/drivers/{id}/sleep-timer`, providing the duration in minutes. The `check:sleep-timer-expiry` job checks every minute and notifies the dispatcher via in-app notification and Telegram when the timer expires. Cancel an active timer at any time with `DELETE /api/drivers/{id}/sleep-timer`.
+  </Accordion>
+</AccordionGroup>

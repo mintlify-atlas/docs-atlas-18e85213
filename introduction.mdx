@@ -1,0 +1,79 @@
+---
+title: "UpdaterAgent TMS: What It Is and How It Works Today"
+description: "UpdaterAgent is a .NET 8 TMS backend with Clean Architecture. It manages loads, ELD tracking, and 10+ integrations with automatic multi-tenant isolation."
+---
+
+UpdaterAgent is a Transportation Management System (TMS) backend built with .NET 8 and Clean Architecture. It serves as the central operations hub for freight logistics — managing the full load lifecycle, tracking real-time ELD positions, routing driver notifications, and integrating with external platforms including QuickManage, Samsara, Zippy, Google Maps, and Telegram. This page explains what the system does, how it is structured, and where to go next.
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Load management" icon="truck">
+    Full lifecycle tracking from Upcoming through Dispatched, InTransit, and Delivered. Includes multi-stop routing, driver assignment with forward-fill logic, ETA calculation, delay detection, and document management for BOL, POD, and rate confirmations.
+  </Card>
+  <Card title="ELD tracking" icon="location-dot">
+    Real-time vehicle position imports from Zippy, Samsara, and UTrackin every 25 minutes. Includes stationary driver detection, sleep timer monitoring, and position-based ETA updates.
+  </Card>
+  <Card title="External integrations" icon="plug">
+    Webhook and REST integrations with QuickManage TMS, Nylas email, Telegram Bot, Google Maps, OSRM, Nominatim, and AskAI for automated load imports, routing, geocoding, and AI document analysis.
+  </Card>
+  <Card title="Multi-tenancy" icon="building">
+    Automatic row-level tenant isolation via EF Core global query filters. All entities carry a `TenantId`; no manual `.Where(x => x.TenantId == ...)` filtering is required in application code.
+  </Card>
+</CardGroup>
+
+## Technology stack
+
+UpdaterAgent is built on the following technologies:
+
+| Layer | Technology |
+|---|---|
+| Backend framework | .NET 8, ASP.NET Core |
+| Database | PostgreSQL 16 |
+| ORM | Entity Framework Core 8 (Npgsql), Dapper |
+| Background jobs | Hangfire (11 recurring jobs) |
+| Real-time communication | SignalR |
+| Logging | Serilog, Grafana Loki |
+| API documentation | Swagger / OpenAPI |
+
+<Info>
+  The API surface spans 41 REST controllers with 200+ endpoints. Interactive documentation is available at `https://localhost:5001/swagger` when running locally.
+</Info>
+
+## Clean Architecture layers
+
+The codebase is organized into four layers with a strict inward dependency flow: `Api → Application → Infrastructure ← Domain`.
+
+```
+src/
+├── UpdaterAgent.Api            → Controllers, middleware, SignalR hubs
+├── UpdaterAgent.Application    → Services, background jobs, DTOs, business logic
+├── UpdaterAgent.Infrastructure → EF Core, external brokers, persistence
+└── UpdaterAgent.Domain         → Entities, enums, interfaces (zero dependencies)
+```
+
+<Note>
+  The Domain layer has zero external dependencies. All entities use `AuditableModelBase<long>` and implement `ITenantEntity` for automatic audit trails and tenant isolation.
+</Note>
+
+## Security model
+
+Authentication uses JWT with refresh tokens. Authorization is permission-based. Webhook security uses HMAC signature verification for QuickManage inbound events. All external communication is encrypted over HTTPS.
+
+<Warning>
+  The `IgnoreQueryFilters()` method bypasses the global tenant filter. It is permitted only for login flows (no JWT yet) and cross-tenant admin operations. Always re-add the soft-delete check: `.IgnoreQueryFilters().Where(x => !x.IsDeleted)`.
+</Warning>
+
+## Where to go next
+
+<CardGroup cols={3}>
+  <Card title="Architecture" icon="sitemap" href="/architecture/overview">
+    Understand the Clean Architecture layers, dependency flow, and design decisions.
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/authentication">
+    Explore authentication, endpoint schemas, and request/response examples.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Clone the repo, apply migrations, and make your first authenticated API call.
+  </Card>
+</CardGroup>

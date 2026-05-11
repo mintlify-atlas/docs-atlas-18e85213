@@ -1,0 +1,204 @@
+---
+title: "Hybrid routing and geocoding with OSRM and Google Maps"
+description: "UpdaterAgent uses OSRM for zero-cost routing on every ELD check-in, falls back to Google Maps for delayed trucks, and geocodes addresses via Nominatim."
+---
+
+UpdaterAgent calculates ETAs and detects delays using a hybrid routing approach that keeps API costs low without sacrificing accuracy. The primary engine is OSRM (OpenStreetMap Routing Machine), a self-hosted, zero-cost router. Google Maps is called only when OSRM produces an unrealistic result or when a truck is meaningfully behind schedule. Additional fallbacks — Valhalla and HERE Maps — are available if Google Maps is unavailable.
+
+## Routing strategy
+
+The routing decision is made per ELD position check-in using the following priority order:
+
+<Steps>
+  <Step title="Call OSRM (primary)">
+    Every check-in calls OSRM first. OSRM is self-hosted and free, so there is no per-call cost. It returns a distance in meters and a duration in seconds for the driving route from the truck's current GPS position to the delivery stop.
+  </Step>
+  <Step title="Validate the OSRM result">
+    The OSRM distance is compared against the straight-line (Haversine) distance between the two points. If `osrmDistance > straightLineDistance × 2`, the route is considered unrealistic (for example, a ferry crossing or off-road path) and OSRM is discarded.
+
+    ```csharp
+    var osrmRoute = await _osrmBroker.CalculateRouteAsync(from, to);
+    var straightLine = CalculateStraightLineDistance(from, to);
+
+    if (osrmRoute.Distance > straightLine * 2)
+    {
+        var googleRoute = await _googleMapBroker.CalculateRouteAsync(from, to);
+        return googleRoute;
+    }
+
+    return osrmRoute;
+    ```
+  </Step>
+  <Step title="Compute deviation">
+    The remaining duration from OSRM is compared against the time available before the delivery appointment:
+
+    ```text
+    deviationPct = max(0, (remainingDuration - timeAvailable) / timeAvailable × 100)
+    ```
+
+    | deviationPct | TripStatus | Google Maps called? |
+    |---|---|---|
+    | ≤ 10% | `OnSchedule` | No — ETA from OSRM |
+    | 10–25% | `Behind` | Yes, if cooldown expired |
+    | > 25% | `Critical` | Yes, if cooldown expired |
+  </Step>
+  <Step title="Call Google Maps (conditional fallback)">
+    Google Maps is called only when a truck is `Behind` or `Critical` **and** the per-truck 30-minute cooldown has expired. If the same truck was already charged a Google call within the last 30 minutes, the previous ETA is reused.
+
+    All Google Maps calls are logged to `GoogleMapsApiCallLog` with endpoint, timestamp, and estimated cost for billing visibility.
+  </Step>
+  <Step title="Fallback to Valhalla or HERE Maps">
+    If Google Maps is unavailable or returns an error, the routing chain falls back to Valhalla and then HERE Maps. Both engines are configured as on-demand fallbacks and require no auth (Valhalla) or an API key (HereRouting).
+  </Step>
+</Steps>
+
+<Tip>
+  Configure your `OsrmConfig.BaseUrl` to point to a self-hosted OSRM instance for production workloads. The public OSRM endpoint (`router.project-osrm.org`) has no SLA and rate limits that may cause throttling under fleet-scale traffic.
+</Tip>
+
+## OSRM
+
+OSRM (Open Source Routing Machine) is the primary routing engine. It is deployed as a self-hosted service using OpenStreetMap road data.
+
+- **Auth:** None — internal network only
+- **Endpoint:** `GET /route/v1/driving/{lon,lat};{lon,lat}?overview=false`
+- **Returns:** Distance (meters) + duration (seconds)
+- **Cost:** Free
+
+```json
+"OsrmConfig": {
+  "BaseUrl": "http://router.project-osrm.org"
+}
+```
+
+OSRM is called on every ELD position check-in regardless of truck status. Its result is used directly for `OnSchedule` trucks and as the deviation baseline for `Behind`/`Critical` trucks.
+
+## Google Maps
+
+Google Maps is the paid fallback for routing and geocoding. All calls are rate-limited (50 requests/second) and tracked in `GoogleMapsApiCallLog`.
+
+- **Auth:** API key in `appsettings.json`
+- **Capabilities:** Route calculation, geocoding, reverse geocoding, distance matrix
+- **Cost:** Per-call billing — calls are minimized by the OSRM-first strategy and the 30-minute cooldown
+
+```json
+"GoogleMapConfig": {
+  "ApiKey": "your-google-maps-api-key"
+}
+```
+
+<Tip>
+  Set a Google Maps API key budget alert in the Google Cloud Console. The hybrid strategy significantly reduces call volume compared to calling Google on every check-in, but monitoring spend is still recommended.
+</Tip>
+
+## Valhalla and HERE Maps
+
+Valhalla and HereRouting serve as secondary fallbacks if Google Maps is unavailable.
+
+| Engine | Auth | Self-hosted |
+|---|---|---|
+| Valhalla | None | Optional |
+| HereRouting | API key | No (cloud service) |
+
+Both engines expose the same `CalculateRouteAsync` interface as OSRM and Google Maps, so the routing layer can swap between them without changing business logic.
+
+## Geocoding
+
+Delivery addresses must have latitude and longitude coordinates before OSRM can route to them. UpdaterAgent geocodes addresses lazily — the first time a truck routes to an address, its coordinates are resolved and stored permanently.
+
+### Geocoding flow
+
+<Steps>
+  <Step title="Check stored coordinates">
+    If `Address.Lat` and `Address.Lng` are already set, no geocoding call is made. The coordinates stored at import time are reused for all future routing to that address.
+  </Step>
+  <Step title="Call Nominatim (primary geocoder)">
+    Nominatim is the OpenStreetMap geocoder — free, no API key required.
+
+    - **Endpoint:** `GET /search?q={address}&format=json&limit=1`
+    - **Auth:** None
+    - **Cost:** Free
+
+    ```json
+    "NominatimConfig": {
+      "BaseUrl": "https://nominatim.openstreetmap.org"
+    }
+    ```
+
+    On success, coordinates are written back to the `addresses` table. The geocoding cost for any given address is paid exactly once.
+  </Step>
+  <Step title="Fall back to Google Maps geocoding">
+    If Nominatim fails or returns no results, UpdaterAgent falls back to the Google Maps Geocoding API (`GeocodeAddressAsync`). The coordinates are again stored to prevent repeat calls.
+  </Step>
+</Steps>
+
+<Note>
+  The geocoding result is persisted to `addresses.lat` and `addresses.lng` after the first successful lookup. Subsequent routing calls for the same address skip geocoding entirely.
+</Note>
+
+### GeoNames — timezone lookup
+
+GeoNames provides timezone resolution for coordinates. It is called on-demand when UpdaterAgent needs to express appointment times or ETAs in the local timezone of a delivery address.
+
+- **Auth:** None
+- **Cost:** Free
+
+## ETA calculation
+
+ETA is calculated per ELD position check-in using the routing result:
+
+```text
+remainingDuration  = OSRM(truckGPS → delivery address)   [seconds]
+ETA                = position.CreatedAt + remainingDuration
+```
+
+If Google Maps is called (Behind/Critical + cooldown expired), the Google duration replaces the OSRM duration in the ETA formula. The ETA is stored on the `EldPosition` entity and surfaced via the Update Board and load detail endpoints.
+
+## Geocode an address on demand
+
+```bash
+POST /api/addresses/geocode
+Content-Type: application/json
+
+{
+  "address": "1600 Amphitheatre Parkway, Mountain View, CA"
+}
+```
+
+Response:
+
+```json
+{
+  "latitude": 37.4224,
+  "longitude": -122.0842
+}
+```
+
+This endpoint is useful for pre-geocoding addresses before a load becomes active, ensuring the first ELD check-in has coordinates available without triggering an inline geocoding call.
+
+## Configuration reference
+
+All routing and geocoding settings belong in `appsettings.json` (and environment-specific overrides):
+
+```json
+"OsrmConfig": {
+  "BaseUrl": "http://router.project-osrm.org"
+},
+"NominatimConfig": {
+  "BaseUrl": "https://nominatim.openstreetmap.org"
+},
+"GoogleMapConfig": {
+  "ApiKey": "your-google-maps-api-key"
+},
+"EldRouteConfig": {
+  "DeviationWarningPct": 10,
+  "DeviationCriticalPct": 25,
+  "CooldownMinutes": 30
+}
+```
+
+| Setting | Default | Effect |
+|---|---|---|
+| `DeviationWarningPct` | `10` | Below this threshold → `OnSchedule`, no Google call |
+| `DeviationCriticalPct` | `25` | Between warning and this → `Behind`; above → `Critical` |
+| `CooldownMinutes` | `30` | Minimum minutes between Google calls for the same truck |

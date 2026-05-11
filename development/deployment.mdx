@@ -1,0 +1,178 @@
+---
+title: "Deploying UpdaterAgent with Docker and .NET"
+description: "Deploy UpdaterAgent via Docker Compose: .NET 8 API and PostgreSQL, EF Core migrations, environment-specific appsettings, and Serilog/Loki observability."
+---
+
+UpdaterAgent is packaged as a containerised .NET 8 application alongside a PostgreSQL 16.4 database. The same Docker Compose file drives all environments; runtime behaviour is controlled by `ASPNETCORE_ENVIRONMENT` and the corresponding `appsettings` file. This page covers everything needed to build, run, and observe a deployed instance.
+
+## Docker Compose services
+
+The `docker-compose.yml` at the repository root defines two services that share a private `db-network`.
+
+```yaml
+services:
+  updater-agent-api:
+    image: updater-agent-api:latest
+    build:
+      context: .
+      dockerfile: src/UpdaterAgent.Api/Dockerfile
+      args:
+        ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT}
+    ports:
+      - "8080:8080"
+    environment:
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT}
+      OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS}
+      ConnectionStrings__DefaultConnectionString: "Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${DB_USER};Password=${DB_PASSWORD}"
+      LOKI_URL: ${LOKI_URL}
+      LOKI_USERNAME: ${LOKI_USERNAME}
+      LOKI_PASSWORD: ${LOKI_PASSWORD}
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
+      TELEGRAM_GROUP_ID: ${TELEGRAM_GROUP_ID}
+    restart: always
+    networks:
+      - db-network
+
+  db:
+    image: postgres:16.4
+    container_name: agent_db
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    volumes:
+      - ~/apps/postgres:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    networks:
+      - db-network
+```
+
+<Note>
+All sensitive values (`DB_PASSWORD`, `TELEGRAM_TOKEN`, OTLP headers, Loki credentials) are read from environment variables at runtime. Never hard-code secrets in `docker-compose.yml` or commit them to the repository.
+</Note>
+
+## Environment configurations
+
+The API reads its configuration from `appsettings.json` combined with the environment-specific override file. Set `ASPNETCORE_ENVIRONMENT` to control which file is loaded.
+
+| Environment | appsettings file | Purpose |
+|---|---|---|
+| Development | `appsettings.Development.json` | Local development |
+| Staging | `appsettings.Staging.json` | Pre-production testing |
+| Sandbox | `appsettings.Sandbox.json` | Integration testing |
+| Production | `appsettings.Production.json` | Live environment |
+
+```bash
+# Set the target environment before starting the container
+export ASPNETCORE_ENVIRONMENT=Staging
+docker compose up -d
+```
+
+## Deployment steps
+
+<Steps>
+  <Step title="Build the solution">
+    Verify the solution compiles cleanly before building the container image.
+
+    ```bash
+    dotnet build UpdaterAgent.sln
+    ```
+  </Step>
+
+  <Step title="Apply database migrations">
+    Run EF Core migrations against the target database before starting the application. This creates or updates the schema to match the current codebase.
+
+    ```bash
+    # Add a new migration (development only)
+    dotnet ef migrations add MigrationName \
+      -p src/UpdaterAgent.Infrastructure \
+      -s src/UpdaterAgent.Api
+
+    # Apply all pending migrations
+    dotnet ef database update \
+      --project src/UpdaterAgent.Infrastructure \
+      --startup-project src/UpdaterAgent.Api
+    ```
+  </Step>
+
+  <Step title="Start the services">
+    Launch both the API and the database with Docker Compose.
+
+    ```bash
+    docker compose up -d
+    ```
+
+    To run the API locally without Docker:
+
+    ```bash
+    cd src/UpdaterAgent.Api && dotnet run
+    ```
+  </Step>
+
+  <Step title="Verify the deployment">
+    Confirm the application is healthy before routing traffic to it.
+
+    ```bash
+    curl http://localhost:5000/health
+    # Expected: {"status":"Healthy"}
+    ```
+  </Step>
+</Steps>
+
+## Useful URLs
+
+| Resource | URL |
+|---|---|
+| Swagger UI | `https://localhost:5001/swagger` |
+| Hangfire dashboard | `https://localhost:5001/hangfire` |
+| Health check | `http://localhost:5000/health` |
+| API base | `https://localhost:5001/api/v1` |
+
+## Observability stack
+
+UpdaterAgent ships with a full observability stack configured at startup.
+
+<AccordionGroup>
+  <Accordion title="Serilog — structured logging">
+    All log output is structured JSON via Serilog. Multiple sinks are configured per environment, including console, file, and Grafana Loki. Log level and sink destinations are controlled by `appsettings.{Environment}.json`.
+
+    ```json
+    {
+      "Serilog": {
+        "MinimumLevel": {
+          "Default": "Information",
+          "Override": {
+            "Microsoft": "Warning",
+            "Microsoft.AspNetCore": "Warning"
+          }
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Grafana Loki — log aggregation">
+    Logs are shipped to a Grafana Loki instance using the `LOKI_URL`, `LOKI_USERNAME`, and `LOKI_PASSWORD` environment variables. Loki labels are set per service and environment for efficient querying in Grafana dashboards.
+  </Accordion>
+
+  <Accordion title="Telegram — critical error notifications">
+    The application uses `TELEGRAM_TOKEN` and `TELEGRAM_GROUP_ID` to send critical error alerts directly to a configured Telegram group. Background job failures and unhandled exceptions at or above the Error level trigger a notification.
+  </Accordion>
+
+  <Accordion title="OpenTelemetry — distributed tracing">
+    Traces are exported via the OTLP exporter. Configure the endpoint and authentication using the environment variables below.
+
+    ```bash
+    OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+    OTEL_EXPORTER_OTLP_ENDPOINT=https://your-otlp-endpoint
+    OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <token>
+    ```
+  </Accordion>
+</AccordionGroup>
+
+<Warning>
+The Hangfire dashboard at `/hangfire` is protected by `HangfireAuthorizationFilter`. Access requires an authenticated session with an admin role. A 403 response in a fresh environment indicates the user is not logged in or does not have the required role.
+</Warning>

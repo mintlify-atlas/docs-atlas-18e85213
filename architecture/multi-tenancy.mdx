@@ -1,0 +1,108 @@
+---
+title: "Multi-tenant data isolation in UpdaterAgent"
+description: "How UpdaterAgent enforces automatic row-level tenant isolation via EF Core global query filters, and the rules for the rare cases that bypass them."
+---
+
+UpdaterAgent is a multi-tenant system where each tenant's data is completely isolated from every other tenant's. Isolation is enforced automatically at the database query level through EF Core global query filters — no manual filtering is required in application code. Every entity that participates in tenancy implements the `ITenantEntity` interface, which is the hook that activates automatic isolation.
+
+## How automatic query filtering works
+
+`AppDbContext.OnModelCreating` registers a global query filter for every entity that implements `ITenantEntity`:
+
+```csharp
+// Applied automatically to every ITenantEntity query
+!e.IsDeleted && (IsSuperAdmin || e.TenantId == CurrentTenantId)
+```
+
+`CurrentTenantId` and `IsSuperAdmin` are properties on `AppDbContext` itself, resolved from the JWT `tenantId` claim via `ITenantContextService` on each request scope. Because these are instance properties on the DbContext (not captured constants), EF Core correctly re-evaluates them per query.
+
+<Info>
+  `TenantContextMiddleware` reads the `tenant-id` claim from the JWT and populates `ITenantContextService` at the start of every request. The DbContext properties delegate to this service.
+</Info>
+
+### The golden rule
+
+**Never write `.Where(x => x.TenantId == ...)` manually.** The global filter already applies this condition to every query. Adding a manual filter is redundant at best and can mask bugs where the filter is accidentally bypassed.
+
+## Automatic TenantId on insert
+
+When an entity in `Added` state is saved, `AppDbContext.SaveChangesAsync` calls `TrackTenantId()`, which:
+
+1. Finds all `Added` entities implementing `ITenantEntity` where `TenantId == 0`
+2. Auto-assigns `CurrentTenantId` from the JWT claim
+3. Skips entities where `TenantId` is already set (background jobs, onboarding flows)
+
+This means normal CRUD in HTTP-scoped services requires no explicit `TenantId` assignment on new entities.
+
+## When to use IgnoreQueryFilters()
+
+`IgnoreQueryFilters()` bypasses **both** the tenant filter and the soft-delete filter. It is permitted in exactly two situations:
+
+<AccordionGroup>
+  <Accordion title="Login — no JWT available yet">
+    At login time there is no access token, so `CurrentTenantId` is `0`. The tenant filter would match no real users (`TenantId > 0`), causing every valid login attempt to return "invalid credentials".
+
+    ```csharp
+    var maybeUser = await dbContext.Users
+        .IgnoreQueryFilters()
+        .Where(u => !u.IsDeleted)
+        .Include(u => u.Companies)
+        .Include(u => u.Role)
+        .ThenInclude(r => r.Permissions)
+        .SingleOrDefaultAsync(x => x.Email == request.Email);
+    ```
+
+    Apply the same pattern to any query that runs before authentication: password reset, registration, and similar pre-auth flows.
+  </Accordion>
+  <Accordion title="Cross-tenant admin operations">
+    System administrators need to query across all tenants. After calling `IgnoreQueryFilters()`, the service must check `IsSuperAdmin` before proceeding and must manually re-apply the soft-delete filter.
+
+    ```csharp
+    var allLoads = await _dbContext.Loads
+        .IgnoreQueryFilters()
+        .Where(l => !l.IsDeleted) // re-add soft-delete check manually
+        .ToListAsync();
+    ```
+  </Accordion>
+</AccordionGroup>
+
+<Warning>
+  `IgnoreQueryFilters()` also disables the soft-delete filter. Always chain `.Where(x => !x.IsDeleted)` immediately after to avoid returning deleted records.
+</Warning>
+
+## Background jobs
+
+Background jobs run outside the HTTP request pipeline, so there is no JWT and no `CurrentTenantId`. `TrackTenantId()` skips auto-assignment when `HasTenantContext` is `false`.
+
+**Background jobs must set `TenantId` explicitly** before querying or inserting tenant-scoped data:
+
+```csharp
+// In a Hangfire job — set tenant context before any DB operation
+_tenantContextService.SetTenantId(tenantId);
+
+var loads = await _dbContext.Loads
+    .Where(l => l.Status == ELoadStatus.InTransit)
+    .ToListAsync();
+```
+
+Similarly, seed and onboarding methods that run without an HTTP context must pass `tenantId` explicitly to any helper that creates tenant-scoped entities.
+
+## Tables excluded from tenant isolation
+
+The following 13 tables are intentionally excluded from the global query filter because they are shared lookup or junction tables:
+
+| Table | Reason |
+|---|---|
+| `tenants` | The tenant registry itself |
+| `permissions` | Shared permission definitions |
+| `permission_role` | Junction table |
+| `permission_tenant` | Junction table |
+| `company_user` | Junction table |
+| `label_tickets` | Junction table |
+| `countries` | Global reference data |
+| `states` | Global reference data |
+| `setting_categories` | Global reference data |
+| `addresses` | Shared address records |
+| `ai_description_histories` | Cross-tenant AI logs |
+| `refresh_tokens` | Auth tokens (user-scoped, not tenant-scoped) |
+| `user_sessions` | Auth sessions (user-scoped, not tenant-scoped) |

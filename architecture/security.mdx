@@ -1,0 +1,151 @@
+---
+title: "Authentication and authorization in UpdaterAgent"
+description: "How to obtain a JWT access token, use it in API requests, refresh it automatically, and understand the permission-based access control system."
+---
+
+UpdaterAgent uses JWT-based authentication with short-lived access tokens and long-lived refresh tokens stored in HttpOnly cookies. Every protected endpoint requires a valid Bearer token. Authorization is permission-based: each user is assigned a role, and each role carries a set of granular permissions that are embedded directly in the JWT.
+
+## Access token
+
+After a successful login, you receive a JWT access token valid for **1 hour**.
+
+**Token lifetime:** 1 hour (`JwtOptions.ExpiryMinutes: 60`)
+
+**Claims embedded in the token:**
+
+| Claim | Value | Description |
+|---|---|---|
+| `sub` | User ID | Identifies the authenticated user |
+| `email` | `user@example.com` | User's email address |
+| `tenantId` | Tenant ID | Determines which tenant's data the user can access |
+| `sessionId` | Session ID | Links the token to a specific session for revocation |
+| `permissions` | `["Loads.View", "Loads.Create", ...]` | Flattened list of all granted permissions |
+| `iat` | Unix timestamp | When the token was issued |
+| `exp` | Unix timestamp | When the token expires |
+
+**Example decoded payload:**
+
+```json
+{
+  "sub": "123",
+  "email": "user@example.com",
+  "tenantId": "1",
+  "sessionId": "456",
+  "permissions": ["Loads.View", "Loads.Create", "Drivers.View"],
+  "iat": 1234567890,
+  "exp": 1234571490
+}
+```
+
+## Refresh token
+
+A refresh token is issued alongside the access token and stored as an HttpOnly cookie named `refresh-token`. It cannot be read by JavaScript, which prevents XSS attacks from stealing it.
+
+**Cookie name:** `refresh-token`  
+**Token lifetime:** 7 days (`JwtOptions.RefreshTokenExpiryDays: 7`)  
+**Cookie flags:** `HttpOnly; Secure; SameSite=Strict`
+
+## How to authenticate
+
+Send a `POST` request with your email and password:
+
+```bash
+POST /api/auth/login
+Content-Type: application/json
+```
+
+```json
+{
+  "email": "user@example.com",
+  "password": "securePassword123"
+}
+```
+
+On success you receive:
+
+```json
+{
+  "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "expireDate": "2025-01-15T14:30:00Z",
+  "sessionId": 456
+}
+```
+
+The `refresh-token` cookie is set automatically by the server response. Store the `accessToken` in memory (not in `localStorage`) to minimize XSS exposure.
+
+## How to use the token
+
+Include the access token in the `Authorization` header of every API request:
+
+```bash
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+## Refreshing the token
+
+When the access token expires, request a new one. No request body is required — the server reads the `refresh-token` cookie automatically:
+
+```bash
+POST /api/auth/refresh-token
+```
+
+On success, you receive a new `accessToken` with a fresh 1-hour expiry. The refresh token itself remains valid for the remainder of its 7-day window.
+
+<Tip>
+  Implement automatic token refresh in your client by intercepting 401 responses: attempt one refresh call, then retry the original request with the new token. If the refresh also returns 401, redirect the user to the login page.
+</Tip>
+
+## Permission-based access control
+
+Every API endpoint that modifies or reads sensitive data is guarded by the `[HasPermission]` attribute. Permissions are resolved from JWT claims on each request — no database call is required for authorization checks.
+
+Permissions are organized into groups by feature area:
+
+| Group | Example permissions |
+|---|---|
+| **Loads** | `Loads.View`, `Loads.Create`, `Loads.Update`, `Loads.Delete`, `Loads.Export` |
+| **Drivers** | `Drivers.View`, `Drivers.Create`, `Drivers.Update`, `Drivers.Delete` |
+| **Users** | `Users.View`, `Users.Create`, `Users.Update`, `Users.Delete` |
+| **Reports** | `Reports.View`, `Reports.Export` |
+| **Tickets** | `Tickets.View`, `Tickets.Create`, `Tickets.Update` |
+
+If your token does not include the required permission, the server returns `403 Forbidden`.
+
+## Common authentication errors
+
+| HTTP status | Error code | Cause |
+|---|---|---|
+| `401` | `Auth.InvalidCredentials` | Email or password is incorrect |
+| `401` | `Auth.Unauthorized` | Token is missing, malformed, or expired |
+| `401` | `Auth.TokenExpired` | Access token has expired — refresh it |
+| `401` | `Auth.SessionInactive` | The session was revoked (logout or password change) |
+| `403` | `Auth.Forbidden` | Token is valid but lacks the required permission |
+
+## Session management
+
+Each login creates a session record that tracks the device name (User-Agent) and IP address. You can list and revoke sessions:
+
+| Action | Endpoint |
+|---|---|
+| List active sessions | `GET /api/auth/sessions` |
+| Revoke a specific session | `DELETE /api/auth/sessions/{id}` |
+| Log out (current session) | `POST /api/auth/logout` |
+
+Revoking a session immediately invalidates any refresh token linked to that session. The associated access token remains valid until it expires naturally (max 1 hour), so clients should also discard the token locally on logout.
+
+## Security features
+
+<AccordionGroup>
+  <Accordion title="Password storage">
+    Passwords are hashed with BCrypt before storage. Plain-text passwords are never logged or persisted. Password validation requires a minimum of 8 characters with configurable complexity rules.
+  </Accordion>
+  <Accordion title="JWT signing">
+    Tokens are signed with HMAC-SHA256 using a secret key configured in `JwtOptions.SecretKey`. Tokens with invalid signatures are rejected before claims are read.
+  </Accordion>
+  <Accordion title="Cookie security">
+    The `refresh-token` cookie is set with `HttpOnly`, `Secure`, and `SameSite=Strict` flags. `HttpOnly` prevents JavaScript access, `Secure` enforces HTTPS transmission, and `SameSite=Strict` blocks cross-site request forgery.
+  </Accordion>
+  <Accordion title="CORS and HTTPS">
+    CORS is configured with an explicit allow-list of origins. All production traffic must travel over HTTPS. Security headers including `Content-Security-Policy` and `X-Frame-Options` are applied by middleware.
+  </Accordion>
+</AccordionGroup>

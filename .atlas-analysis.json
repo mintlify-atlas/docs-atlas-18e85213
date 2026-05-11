@@ -1,23 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "UpdaterAgent TMS",
+  "projectType": "api-service",
+  "projectName": "UpdaterAgent TMS",
+  "projectDescription": "A .NET 8 Transportation Management System backend with Clean Architecture that manages loads, drivers, ELD tracking, and integrates with 18+ external services including QuickManage, Samsara, Google Maps, and Telegram.",
   "theme": "luma",
-  "colors": {
-    "primary": "#1E3A5F",
-    "light": "#3A6EA5",
-    "dark": "#0D2137"
-  },
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/ShohjahonSohibov/repo-for-agent"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/ShohjahonSohibov/repo-for-agent"
-    }
-  },
+  "primaryColor": "#1E3A5F",
+  "lightColor": "#3A6EA5",
+  "darkColor": "#0D2137",
   "navigation": {
     "tabs": [
       {
@@ -113,5 +101,42 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "Full load lifecycle management (Upcoming → Dispatched → InTransit → Delivered)",
+    "Real-time ELD position tracking from Zippy, Samsara, UTrackin, and LevelELD",
+    "Multi-tenant data isolation via EF Core global query filters",
+    "Hybrid routing engine: OSRM primary with Google Maps / Valhalla / HERE fallback",
+    "Automated Telegram notifications for drivers and dispatchers",
+    "AI-powered ratecon extraction and ticket suggestion via AskAI",
+    "Hangfire background jobs for TMS/ELD imports and monitoring",
+    "Role-based permission system with 100+ granular permissions",
+    "QuickManage TMS integration with HMAC-verified webhooks",
+    "Nylas email processing for automated ratecon ingestion"
+  ],
+  "publicApiSurface": [
+    "POST /api/auth/login",
+    "POST /api/auth/refresh-token",
+    "GET /api/loads",
+    "POST /api/loads",
+    "GET /api/loads/{id}",
+    "PUT /api/loads/{id}/start",
+    "PUT /api/loads/{id}/complete",
+    "GET /api/stops",
+    "PUT /api/stops/{id}/checkin",
+    "PUT /api/stops/{id}/checkout",
+    "PATCH /api/update-board/{truckId}/heading",
+    "GET /api/drivers",
+    "GET /api/drivers/{id}/current-position",
+    "POST /api/drivers/{id}/sleep-timer",
+    "GET /api/trucks",
+    "GET /api/trailers",
+    "GET /api/brokers",
+    "GET /api/tickets",
+    "POST /api/tickets/{id}/ai-suggestions",
+    "POST /api/quickmanage/import-loads",
+    "POST /api/qm-webhook",
+    "GET /api/reports/load-summary",
+    "GET /api/reports/driver-performance"
+  ]
 }

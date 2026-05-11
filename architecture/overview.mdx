@@ -1,0 +1,55 @@
+---
+title: "UpdaterAgent TMS system architecture and tech stack"
+description: "A high-level view of UpdaterAgent's four-layer .NET 8 architecture, technology stack, and the 11 external services it integrates with."
+---
+
+UpdaterAgent is a Transportation Management System (TMS) backend built on .NET 8. It manages the full logistics lifecycle — loads, drivers, fleet, email processing, and ticketing — while integrating with ELD platforms, routing engines, an AI analysis service, and a Telegram bot for driver notifications. The system is structured around Clean Architecture principles, keeping business logic decoupled from infrastructure and external services.
+
+<Info>
+  All external communication travels over HTTPS. Inbound webhook payloads from QuickManage are verified with HMAC-SHA256 signatures before processing.
+</Info>
+
+## Technology stack
+
+| Category | Technology | Role |
+|---|---|---|
+| **Backend** | .NET 8 / ASP.NET Core | Web API framework with JWT authentication and SignalR hubs |
+| **ORM** | Entity Framework Core 8 + Dapper | EF Core for complex queries; Dapper for performance-critical reads |
+| **Database** | PostgreSQL 16 | Primary relational store for all domain data |
+| **Background processing** | Hangfire | 11+ recurring and scheduled jobs for imports, notifications, and monitoring |
+| **Real-time** | SignalR | WebSocket-based load status updates pushed to connected clients |
+| **Logging** | Serilog + Grafana Loki | Structured logging with log aggregation; Telegram for critical error alerts |
+
+## External integrations
+
+| Service | Purpose | Authentication |
+|---|---|---|
+| **QuickManage TMS** | Import loads, drivers, trucks, and brokers; receive inbound webhooks | Bearer token + HMAC-SHA256 webhook verification |
+| **Zippy ELD** | Real-time vehicle position tracking (polling every 25 min) | API credentials |
+| **Samsara ELD** | Alternative ELD platform | API token |
+| **UTrackin ELD** | Vehicle tracking | OAuth 2.0 |
+| **Telegram Bot API** | Driver notifications, group alerts, hourly load status messages | Bot token |
+| **Nylas Email API** | Email processing and ratecon extraction via inbound webhooks | OAuth 2.0 |
+| **Google Maps API** | Route optimization, geocoding, and ETA calculation (fallback routing) | API key |
+| **OSRM** | Open-source routing engine (primary route calculation) | None (self-hosted) |
+| **Valhalla** | Alternative routing engine | None |
+| **Nominatim** | Address geocoding (fallback) | None |
+| **AskAI** | AI-powered analysis of ratecons and ticket suggestions | API key |
+
+<Note>
+  Routing uses a hybrid strategy: OSRM is tried first (free, self-hosted). If the OSRM distance exceeds twice the straight-line distance, the system falls back to Google Maps, then Valhalla or HERE if Google fails.
+</Note>
+
+## Explore the architecture
+
+<CardGroup cols={3}>
+  <Card title="Clean Architecture" icon="layer-group" href="/architecture/clean-architecture">
+    Four-layer dependency model, service patterns, result types, and DI registration.
+  </Card>
+  <Card title="Multi-tenancy" icon="building" href="/architecture/multi-tenancy">
+    Automatic row-level tenant isolation via EF Core global query filters.
+  </Card>
+  <Card title="Security" icon="shield-halved" href="/architecture/security">
+    JWT authentication, refresh tokens, RBAC permissions, and session management.
+  </Card>
+</CardGroup>

@@ -1,133 +1,82 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
-icon: 'star'
+title: "UpdaterAgent TMS: .NET 8 Transportation Management API"
+description: "UpdaterAgent is a backend TMS API built with .NET 8 Clean Architecture. Manage loads, drivers, ELD tracking, and 18+ integrations from one platform."
 ---
 
-## Setting up
+UpdaterAgent is a comprehensive Transportation Management System (TMS) backend that serves as the central hub for managing freight logistics operations. Built on .NET 8 with Clean Architecture, it handles the full load lifecycle, real-time ELD tracking, driver notifications, and integrates with platforms like QuickManage, Samsara, Google Maps, and Telegram.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Make your first API call and get a load created in under 5 minutes.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="API Reference" icon="code" href="/api/authentication">
+    Complete endpoint documentation with request/response schemas and examples.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Architecture Overview" icon="sitemap" href="/architecture/overview">
+    Understand the Clean Architecture layers and how they fit together.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Integrations" icon="plug" href="/integrations/overview">
+    Connect QuickManage, Samsara, Google Maps, Telegram, and more.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What UpdaterAgent manages
 
-Everything you need to create world-class documentation.
+<CardGroup cols={3}>
+  <Card title="Load Management" icon="truck" href="/features/load-management">
+    Full lifecycle from Upcoming through Dispatched, InTransit, to Delivered with multi-stop routing.
+  </Card>
+  <Card title="Driver & Fleet" icon="id-card" href="/features/driver-fleet">
+    Driver profiles, truck and trailer assignments, sleep timer monitoring, and ELD position tracking.
+  </Card>
+  <Card title="ELD Tracking" icon="location-dot" href="/features/eld-tracking">
+    Real-time position imports from Zippy, Samsara, UTrackin, and LevelELD every 25 minutes.
+  </Card>
+  <Card title="Smart Notifications" icon="bell" href="/features/notifications">
+    Hourly Telegram load updates, delay alerts, stationary driver detection, and sleep timer expiry.
+  </Card>
+  <Card title="Background Jobs" icon="clock" href="/jobs/overview">
+    11+ Hangfire recurring jobs for automated TMS imports, ELD syncs, and monitoring.
+  </Card>
+  <Card title="Multi-Tenancy" icon="building" href="/architecture/multi-tenancy">
+    Automatic row-level tenant isolation via EF Core global query filters — no manual filtering needed.
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Get started
 
-## Make your content agent ready
+<Steps>
+  <Step title="Set up your environment">
+    Install .NET 8 SDK and PostgreSQL 16, then clone the repository and apply EF Core migrations.
 
-Make your docs work for humans and AI agents alike.
+    ```bash
+    dotnet restore UpdaterAgent.sln
+    dotnet ef database update --project src/UpdaterAgent.Infrastructure --startup-project src/UpdaterAgent.Api
+    ```
+  </Step>
+  <Step title="Start the API server">
+    Run the API and open Swagger at `https://localhost:5001/swagger` to explore all endpoints interactively.
 
-<Columns cols={2}>
-  <Card
-    title="Prompt component"
-    icon="robot"
-    href="/agent-ready/prompt"
-  >
-    Embed shareable AI prompts readers can copy or open in Cursor.
-  </Card>
-  <Card
-    title="Visibility"
-    icon="eye"
-    href="/agent-ready/visibility"
-  >
-    Show different content to humans and agents reading your docs.
-  </Card>
-  <Card
-    title="Contextual menu"
-    icon="bolt"
-    href="/agent-ready/contextual"
-  >
-    Give readers one-click access to Claude, ChatGPT, Cursor, and more.
-  </Card>
-  <Card
-    title="AI coding tools"
-    icon="wand-magic-sparkles"
-    href="/ai-tools/claude-code"
-  >
-    Set up Claude Code, Cursor, or Windsurf with Mintlify's skill.
-  </Card>
-</Columns>
+    ```bash
+    cd src/UpdaterAgent.Api && dotnet run
+    ```
+  </Step>
+  <Step title="Authenticate">
+    Exchange credentials for a JWT access token. Include it as a Bearer token in all subsequent requests.
 
-## Need inspiration?
+    ```bash
+    curl -X POST https://localhost:5001/api/auth/login \
+      -H "Content-Type: application/json" \
+      -d '{"email": "admin@yourcompany.com", "password": "yourpassword"}'
+    ```
+  </Step>
+  <Step title="Create your first load">
+    Use the Loads API to create a load with pickup and delivery stops. Track it through the full lifecycle.
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+    See the [Load Management guide](/features/load-management) for full details.
+  </Step>
+</Steps>
+
+<Note>
+  The Hangfire dashboard is available at `https://localhost:5001/hangfire` for monitoring background job execution. Admin role required.
+</Note>

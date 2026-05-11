@@ -1,0 +1,160 @@
+---
+title: "Managing freight loads in the UpdaterAgent TMS system"
+description: "Full load lifecycle management: status transitions, multi-stop routing, ETA calculation, stop check-in/out, and document attachments in UpdaterAgent."
+---
+
+Load management is the core of UpdaterAgent TMS. This page covers how loads are structured, how they move through their lifecycle from creation to delivery, and how dispatchers interact with stops, routing, and file attachments throughout the process.
+
+## Load lifecycle
+
+Loads follow a defined status progression. Every load starts as `Upcoming` and advances as dispatchers and drivers take action. Cancellation is possible at any point before delivery.
+
+```text
+Upcoming → Dispatched → InTransit → Delivered
+                                   ↘ Cancelled
+```
+
+<Note>
+Status transitions are one-directional. A load cannot be moved backward in the lifecycle (e.g., from `InTransit` back to `Dispatched`). Use the `PUT /api/loads/{id}/start` and `PUT /api/loads/{id}/complete` endpoints to advance status.
+</Note>
+
+## Key load properties
+
+Each load record carries the following core fields:
+
+| Property | Type | Description |
+|---|---|---|
+| `TripNumber` | string | Unique trip identifier, used for deduplication on import |
+| `Status` | enum | Current lifecycle status (`Upcoming`, `Dispatched`, `InTransit`, `Delivered`, `Cancelled`) |
+| `Type` | enum | Load type (e.g., dry van, flatbed, reefer) |
+| `Commodity` | string | Description of the freight being hauled |
+| `Weight` | decimal | Freight weight |
+| `CompanyId` | long | Owning company (tenant-scoped) |
+| `CustomerId` | long | Associated customer/broker record |
+
+## Multi-stop routing
+
+Loads contain an ordered list of stops representing pickup and delivery locations. Stops are ordered by `AppointmentDate`. Each stop carries:
+
+- **IsPickup** — whether the stop is a pickup (`true`) or delivery (`false`)
+- **AppointmentDate** — scheduled time at the stop, used for ordering
+- **AddressId** — linked address with geocoded coordinates
+- **AssignedTruckId** — truck responsible for this stop
+- **AssignedDriverIds** — list of driver IDs (stored as `Driver.Id`, not `ImportId`)
+- **IsCurrentHeading** — whether the truck is currently en route to this stop
+
+### Current heading
+
+The system tracks which stop a truck is actively heading toward via the `IsCurrentHeading` flag on the `Stop` entity.
+
+**Set heading explicitly:**
+
+```http
+PATCH /api/update-board/{truckId}/heading
+Content-Type: application/json
+
+{
+  "loadId": 123,
+  "stopId": 456
+}
+```
+
+The system validates that:
+- The load is active (`Upcoming`, `Dispatched`, or `InTransit`)
+- The stop belongs to the load
+- The stop is assigned to the specified truck
+- The stop has not already been completed
+
+**Auto-advance on check-in:**
+
+When a driver checks in to a stop, the system automatically advances the heading:
+
+1. Clears `IsCurrentHeading = false` on the current stop
+2. Finds the next uncompleted stop on the same load and truck, ordered by `AppointmentDate`
+3. Sets `IsCurrentHeading = true` on that stop
+4. If no next stop exists (last stop checked in), heading is left unset
+
+If no stop has `IsCurrentHeading = true`, the system falls back to the first uncompleted stop ordered by `AppointmentDate`.
+
+## Stop operations
+
+Stops move through their own state as the driver progresses:
+
+| Operation | Endpoint | Description |
+|---|---|---|
+| Check in | `PUT /api/stops/{id}/checkin` | Driver has arrived at the stop |
+| Check out | `PUT /api/stops/{id}/checkout` | Driver has departed the stop |
+| Complete | `PUT /api/stops/{id}/complete` | Stop is fully finalized |
+
+## ETA calculation
+
+UpdaterAgent calculates ETA to the current heading stop using a hybrid routing strategy:
+
+1. **OSRM** (primary) — free, self-hosted OpenStreetMap routing
+2. **Google Maps** (fallback) — used when OSRM distance exceeds 2× the straight-line distance, or when OSRM is unavailable
+
+ETAs are available via `GET /api/loads/{id}/eta` and are also included in update board responses.
+
+## File attachments
+
+Loads support document attachments for compliance and proof of delivery:
+
+- **BOL** — Bill of Lading
+- **POD** — Proof of Delivery
+- **Rate Confirmation** — Agreed rate documentation
+
+```http
+POST /api/loads/{id}/files
+Content-Type: multipart/form-data
+
+file: <binary>
+fileType: BOL
+```
+
+Supported formats: PDF, JPEG, PNG. Maximum file size: 10 MB.
+
+## Typical load workflow
+
+<Steps>
+  <Step title="Create the load">
+    Create a new load via `POST /api/loads` or let the system import it automatically from QuickManage TMS via webhook or the scheduled `tms-import:load` job (runs every 3 hours). The load starts with status `Upcoming`.
+  </Step>
+  <Step title="Assign a driver">
+    Assign a driver to the load using `POST /api/loads/{id}/assign-driver`. The driver's `Driver.Id` (local database PK) is stored in each stop's `AssignedDriverIds` field.
+  </Step>
+  <Step title="Dispatch the load">
+    Advance status to `Dispatched` to signal the load is ready for pickup. The driver and dispatcher receive notifications via Telegram.
+  </Step>
+  <Step title="Start transit">
+    Call `PUT /api/loads/{id}/start` when the driver begins moving. Status changes to `InTransit` and ETA tracking becomes active.
+  </Step>
+  <Step title="Progress through stops">
+    As the driver arrives at each stop, use the check-in, check-out, and complete endpoints. The system auto-advances the current heading after each check-in.
+  </Step>
+  <Step title="Upload documents">
+    Upload BOL and POD documents using `POST /api/loads/{id}/files` as the driver completes pickups and deliveries.
+  </Step>
+  <Step title="Complete the load">
+    Call `PUT /api/loads/{id}/complete` once all stops are finished. Status changes to `Delivered`.
+  </Step>
+</Steps>
+
+## Key endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/loads` | List loads with filters and pagination |
+| `GET` | `/api/loads/{id}` | Get load details including stops |
+| `POST` | `/api/loads` | Create a new load |
+| `PUT` | `/api/loads/{id}` | Update load details |
+| `POST` | `/api/loads/{id}/assign-driver` | Assign driver to load |
+| `PUT` | `/api/loads/{id}/start` | Set status to `InTransit` |
+| `PUT` | `/api/loads/{id}/complete` | Set status to `Delivered` |
+| `GET` | `/api/loads/{id}/eta` | Get current ETA to next stop |
+| `POST` | `/api/loads/{id}/files` | Upload BOL, POD, or Rate Confirmation |
+| `GET` | `/api/loads/{id}/files` | List load file attachments |
+| `DELETE` | `/api/loads/{id}/files/{fileId}` | Delete a load file |
+| `PUT` | `/api/stops/{id}/checkin` | Mark stop as checked in |
+| `PUT` | `/api/stops/{id}/checkout` | Mark stop as checked out |
+| `PUT` | `/api/stops/{id}/complete` | Mark stop as completed |
+| `PATCH` | `/api/update-board/{truckId}/heading` | Set which stop the truck is heading to |

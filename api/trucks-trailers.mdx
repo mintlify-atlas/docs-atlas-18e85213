@@ -1,0 +1,378 @@
+---
+title: "Trucks and Trailers API: fleet management"
+description: "Fleet management API for UpdaterAgent TMS. Manage trucks and trailers synced from QuickManage, and configure Telegram group links for driver channels."
+---
+
+The fleet management APIs cover trucks, trailers, and the Telegram group links that connect drivers to their notification channels. Truck and trailer records are synced automatically from QuickManage TMS every 3 hours, but you can also create and update them directly through the API or trigger an immediate sync using the QuickManage import endpoints. Group links are managed separately under `/api/group-links` and allow dispatchers to associate drivers with specific Telegram groups for load notifications.
+
+---
+
+## Trucks
+
+**Base URL:** `/api/trucks`
+
+**Required permission (minimum):** `Trucks.View`
+
+Truck records are imported from QuickManage TMS on a 3-hour schedule. The `importId` field stores the QuickManage identifier; `truckNumber` is the human-readable identifier. The `assignedDriverIds` field stores local `Driver.Id` values.
+
+### GET /api/trucks
+
+List all trucks. Requires `Trucks.View`.
+
+**Query parameters**
+
+<ParamField query="page" type="number">
+  Page number, 1-indexed. Defaults to `1`.
+</ParamField>
+
+<ParamField query="pageSize" type="number">
+  Items per page. Defaults to `20`, maximum `100`.
+</ParamField>
+
+<ParamField query="search" type="string">
+  Text search across truck number and related fields.
+</ParamField>
+
+```bash cURL
+curl https://your-domain.com/api/trucks \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+```json Response
+{
+  "items": [
+    {
+      "id": 9,
+      "truckNumber": "T-114",
+      "importId": "qm-truck-abc123",
+      "assignedDriverIds": ["42"]
+    }
+  ],
+  "totalCount": 31,
+  "page": 1,
+  "pageSize": 20,
+  "totalPages": 2
+}
+```
+
+---
+
+### GET /api/trucks/{id}
+
+Get details for a single truck. Requires `Trucks.View`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The truck ID.
+</ParamField>
+
+```bash cURL
+curl https://your-domain.com/api/trucks/9 \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### POST /api/trucks
+
+Create a new truck record manually. Requires `Trucks.Create`.
+
+<Info>
+  Trucks are normally synced automatically from QuickManage. Use manual creation only when the truck is not managed by QuickManage or you need it available before the next scheduled sync.
+</Info>
+
+**Request body**
+
+<ParamField body="truckNumber" type="string" required>
+  Human-readable truck identifier (e.g., `T-114`).
+</ParamField>
+
+<ParamField body="importId" type="string">
+  External QuickManage identifier for this truck. Used for deduplication during automated imports.
+</ParamField>
+
+<ParamField body="assignedDriverIds" type="array">
+  Array of driver IDs (`Driver.Id` as strings) assigned to this truck.
+</ParamField>
+
+```bash cURL
+curl -X POST https://your-domain.com/api/trucks \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "truckNumber": "T-200",
+    "assignedDriverIds": ["42"]
+  }'
+```
+
+---
+
+### PUT /api/trucks/{id}
+
+Update a truck record. Requires `Trucks.Update`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The truck ID.
+</ParamField>
+
+**Request body**
+
+The body accepts the same fields as `POST /api/trucks`. Include only the fields you want to change.
+
+```bash cURL
+curl -X PUT https://your-domain.com/api/trucks/9 \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"assignedDriverIds": ["42", "55"]}'
+```
+
+---
+
+### DELETE /api/trucks/{id}
+
+Delete a truck record. Requires `Trucks.Delete`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The truck ID to delete.
+</ParamField>
+
+```bash cURL
+curl -X DELETE https://your-domain.com/api/trucks/9 \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+## Trailers
+
+**Base URL:** `/api/trailers`
+
+**Required permission (minimum):** `Trailers.View`
+
+Trailers follow the same import and management pattern as trucks — synced from QuickManage every 3 hours, with full CRUD available through the API.
+
+### GET /api/trailers
+
+List all trailers. Requires `Trailers.View`.
+
+```bash cURL
+curl https://your-domain.com/api/trailers \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### GET /api/trailers/{id}
+
+Get details for a single trailer. Requires `Trailers.View`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The trailer ID.
+</ParamField>
+
+```bash cURL
+curl https://your-domain.com/api/trailers/17 \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### POST /api/trailers
+
+Create a new trailer record. Requires `Trailers.Create`.
+
+**Request body**
+
+<ParamField body="importId" type="string">
+  External QuickManage identifier. Used for deduplication during automated imports.
+</ParamField>
+
+<ParamField body="trailerNumber" type="string" required>
+  Human-readable trailer identifier.
+</ParamField>
+
+```bash cURL
+curl -X POST https://your-domain.com/api/trailers \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"trailerNumber": "TR-88"}'
+```
+
+---
+
+### PUT /api/trailers/{id}
+
+Update a trailer record. Requires `Trailers.Update`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The trailer ID.
+</ParamField>
+
+```bash cURL
+curl -X PUT https://your-domain.com/api/trailers/17 \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"trailerNumber": "TR-88-B"}'
+```
+
+---
+
+### DELETE /api/trailers/{id}
+
+Delete a trailer record. Requires `Trailers.Delete`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The trailer ID to delete.
+</ParamField>
+
+```bash cURL
+curl -X DELETE https://your-domain.com/api/trailers/17 \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+## Group links
+
+**Base URL:** `/api/group-links`
+
+**Required permission (minimum):** `GroupLinks.View`
+
+Group links associate a Telegram group with a set of drivers. When a load notification or alert fires, the system uses the driver's `groupLinkId` to determine which Telegram group to post to. This allows different groups of drivers to receive targeted notifications.
+
+### GET /api/group-links
+
+List all configured Telegram group links. Requires `GroupLinks.View`.
+
+```bash cURL
+curl https://your-domain.com/api/group-links \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+```json Response
+[
+  {
+    "id": 5,
+    "name": "Texas Fleet",
+    "telegramGroupId": "-1001234567890",
+    "createdAt": "2025-01-10T08:00:00Z"
+  }
+]
+```
+
+---
+
+### POST /api/group-links
+
+Create a new Telegram group link. Requires `GroupLinks.Create`.
+
+**Request body**
+
+<ParamField body="name" type="string" required>
+  A descriptive label for this group (e.g., `Texas Fleet`, `Night Shift`).
+</ParamField>
+
+<ParamField body="telegramGroupId" type="string" required>
+  The Telegram group's chat ID (typically a negative number for groups, e.g., `-1001234567890`).
+</ParamField>
+
+```bash cURL
+curl -X POST https://your-domain.com/api/group-links \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Midwest Fleet",
+    "telegramGroupId": "-1009876543210"
+  }'
+```
+
+---
+
+### PUT /api/group-links/{id}
+
+Update an existing group link. Requires `GroupLinks.Update`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The group link ID.
+</ParamField>
+
+```bash cURL
+curl -X PUT https://your-domain.com/api/group-links/5 \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Texas & Oklahoma Fleet"}'
+```
+
+---
+
+### DELETE /api/group-links/{id}
+
+Delete a group link. Requires `GroupLinks.Delete`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The group link ID.
+</ParamField>
+
+<Warning>
+  Deleting a group link that is still referenced by driver records will leave those drivers without a Telegram notification channel. Update affected drivers before deleting.
+</Warning>
+
+```bash cURL
+curl -X DELETE https://your-domain.com/api/group-links/5 \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+## QuickManage sync
+
+Trucks and trailers are imported from QuickManage TMS on a 3-hour schedule via the `QuickManageImport` background job. To trigger an immediate sync without waiting for the next scheduled run, use the QuickManage import endpoints.
+
+<Tip>
+  To trigger an immediate truck or trailer sync, call `POST /api/quickmanage/import-trucks` or `POST /api/quickmanage/import-trailers`. Both require the `TmsImport.Execute` permission.
+</Tip>
+
+```bash cURL
+# Trigger immediate truck import
+curl -X POST https://your-domain.com/api/quickmanage/import-trucks \
+  -H "Authorization: Bearer <accessToken>"
+
+# Trigger immediate trailer import
+curl -X POST https://your-domain.com/api/quickmanage/import-trailers \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+## Permissions summary
+
+| Resource | Permission | Grants access to |
+|---|---|---|
+| Trucks | `Trucks.View` | GET list and detail |
+| Trucks | `Trucks.Create` | `POST /api/trucks` |
+| Trucks | `Trucks.Update` | `PUT /api/trucks/{id}` |
+| Trucks | `Trucks.Delete` | `DELETE /api/trucks/{id}` |
+| Trailers | `Trailers.View` | GET list and detail |
+| Trailers | `Trailers.Create` | `POST /api/trailers` |
+| Trailers | `Trailers.Update` | `PUT /api/trailers/{id}` |
+| Trailers | `Trailers.Delete` | `DELETE /api/trailers/{id}` |
+| Group Links | `GroupLinks.View` | GET list and detail |
+| Group Links | `GroupLinks.Create` | `POST /api/group-links` |
+| Group Links | `GroupLinks.Update` | `PUT /api/group-links/{id}` |
+| Group Links | `GroupLinks.Delete` | `DELETE /api/group-links/{id}` |
+| QM Sync | `TmsImport.Execute` | Trigger immediate QuickManage import |

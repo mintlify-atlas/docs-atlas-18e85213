@@ -1,0 +1,320 @@
+---
+title: "Local development environment setup for UpdaterAgent"
+description: "Set up UpdaterAgent for local development: install dependencies, configure PostgreSQL, apply EF Core migrations, run the API, and execute the test suite."
+---
+
+This guide covers the complete local development setup for UpdaterAgent — from installing required software through verifying the running API and test suite. Allow 30–45 minutes for a first-time setup.
+
+## Prerequisites
+
+The following software must be installed before proceeding.
+
+| Software | Version | Purpose |
+|---|---|---|
+| .NET SDK | 8.0 or later | Backend framework and CLI tooling |
+| PostgreSQL | 16.x | Primary relational database |
+| Git | Latest | Version control |
+| IDE | Any | VS Code, JetBrains Rider, or Visual Studio |
+
+Optional tools that improve the development experience:
+
+| Software | Purpose |
+|---|---|
+| Postman or Insomnia | Manual API testing |
+| pgAdmin 4 | PostgreSQL database management GUI |
+| Docker Desktop | Containerized PostgreSQL alternative |
+
+**System requirements:** Windows 10/11, macOS 10.15+, or Ubuntu 20.04+. Minimum 8 GB RAM; 5 GB free disk space.
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the repository and switch to the development branch.
+
+    ```bash
+    git clone https://github.com/Abstract-IT-Group/updater-agent.git
+    cd updater-agent
+    git checkout dev
+    ```
+
+    The project structure is:
+
+    ```
+    updater-agent/
+    ├── src/
+    │   ├── UpdaterAgent.Api/              # Web API layer
+    │   ├── UpdaterAgent.Application/      # Business logic
+    │   ├── UpdaterAgent.Domain/           # Domain entities
+    │   └── UpdaterAgent.Infrastructure/   # Data access & integrations
+    ├── tests/
+    │   ├── UpdaterAgent.Application.ServicesTests/
+    │   └── UpdaterAgent.Integration.Tests/
+    ├── docs/
+    └── UpdaterAgent.sln
+    ```
+  </Step>
+
+  <Step title="Set up PostgreSQL">
+    Choose the option that fits your environment.
+
+    <Tabs>
+      <Tab title="Local PostgreSQL">
+        **Install PostgreSQL 16:**
+
+        <CodeGroup>
+
+        ```bash macOS (Homebrew)
+        brew install postgresql@16
+        brew services start postgresql@16
+        ```
+
+        ```bash Ubuntu/Debian
+        sudo apt update
+        sudo apt install postgresql-16 postgresql-contrib
+        sudo systemctl start postgresql
+        ```
+
+        </CodeGroup>
+
+        On Windows, download the PostgreSQL 16 installer from [postgresql.org](https://www.postgresql.org/download/) and run it with default settings.
+
+        **Create the development database:**
+
+        ```bash
+        # Connect to PostgreSQL
+        psql -U postgres
+
+        # On macOS/Linux you may need:
+        # sudo -u postgres psql
+        ```
+
+        ```sql
+        CREATE DATABASE dev_updater_agentdb;
+        \q
+        ```
+      </Tab>
+      <Tab title="Docker">
+        If you prefer not to install PostgreSQL locally, run it in a container:
+
+        ```bash
+        docker run --name updater-postgres \
+          -e POSTGRES_PASSWORD=123456 \
+          -e POSTGRES_DB=dev_updater_agentdb \
+          -p 5432:5432 \
+          -d postgres:16
+        ```
+
+        Verify the container is running:
+
+        ```bash
+        docker ps
+        ```
+
+        <Note>
+          The container exposes PostgreSQL on the standard port `5432`. The connection string in the next step works without any changes.
+        </Note>
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Configure the connection string">
+    Open `src/UpdaterAgent.Api/appsettings.Development.json`. The default connection string targets `localhost:5432` with the `postgres` user:
+
+    ```json
+    {
+      "ConnectionStrings": {
+        "DefaultConnectionString": "Host=localhost;Database=dev_updater_agentdb;Username=postgres;Password=123456;Pooling=true;"
+      }
+    }
+    ```
+
+    If you used a different password during PostgreSQL setup, update the `Password` field. Leave all other values unchanged for a standard local setup.
+
+    Alternatively, set the connection string as an environment variable to avoid storing credentials in a file:
+
+    <CodeGroup>
+
+    ```bash macOS/Linux
+    export ConnectionStrings__DefaultConnectionString="Host=localhost;Database=dev_updater_agentdb;Username=postgres;Password=123456;Pooling=true;"
+    export ASPNETCORE_ENVIRONMENT="Development"
+    ```
+
+    ```powershell Windows (PowerShell)
+    $env:ConnectionStrings__DefaultConnectionString = "Host=localhost;Database=dev_updater_agentdb;Username=postgres;Password=123456;Pooling=true;"
+    $env:ASPNETCORE_ENVIRONMENT = "Development"
+    ```
+
+    </CodeGroup>
+  </Step>
+
+  <Step title="Apply EF Core migrations">
+    Install the EF Core CLI tools if not already present:
+
+    ```bash
+    dotnet tool install --global dotnet-ef
+    dotnet ef --version
+    # Expected: Entity Framework Core .NET Command-line Tools 8.0.x
+    ```
+
+    Apply all migrations to create the full database schema:
+
+    ```bash
+    dotnet ef database update --project src/UpdaterAgent.Infrastructure --startup-project src/UpdaterAgent.Api
+    ```
+
+    The output ends with `Done.` after listing each applied migration. To create a new migration after changing domain entities:
+
+    ```bash
+    dotnet ef migrations add MigrationName -p src/UpdaterAgent.Infrastructure -s src/UpdaterAgent.Api
+    ```
+
+    <Warning>
+      If the database already exists with a conflicting state, drop it first before re-applying migrations:
+
+      ```bash
+      dotnet ef database drop --project src/UpdaterAgent.Infrastructure --startup-project src/UpdaterAgent.Api
+      dotnet ef database update --project src/UpdaterAgent.Infrastructure --startup-project src/UpdaterAgent.Api
+      ```
+    </Warning>
+  </Step>
+
+  <Step title="Build and run the API">
+    Restore packages and build the full solution:
+
+    ```bash
+    dotnet restore UpdaterAgent.sln
+    dotnet build UpdaterAgent.sln
+    ```
+
+    A clean build ends with `Build succeeded. 0 Warning(s) 0 Error(s)`.
+
+    Start the API server:
+
+    ```bash
+    cd src/UpdaterAgent.Api && dotnet run
+    ```
+
+    The server listens on two addresses:
+
+    ```
+    Now listening on: https://localhost:5001
+    Now listening on: http://localhost:5000
+    Application started. Press Ctrl+C to shut down.
+    ```
+  </Step>
+
+  <Step title="Run the test suite">
+    Run unit tests and integration tests from the solution root:
+
+    ```bash
+    dotnet test tests/UpdaterAgent.Application.ServicesTests
+    dotnet test tests/UpdaterAgent.Integration.Tests
+    ```
+
+    To run a single test by name:
+
+    ```bash
+    dotnet test tests/UpdaterAgent.Application.ServicesTests --filter "ClassName.MethodName"
+    ```
+
+    Tests follow the `MethodName_Scenario_Expected` naming convention (for example, `CreateAsync_WithValidRequest_ShouldCreateUserSuccessfully`). Unit tests use xUnit, Moq, and FluentAssertions. Integration tests use `WebApplicationFactory`.
+  </Step>
+</Steps>
+
+## Useful URLs
+
+Once the API is running, the following local URLs are available:
+
+| Resource | URL |
+|---|---|
+| Swagger UI | `https://localhost:5001/swagger` |
+| Hangfire dashboard | `https://localhost:5001/hangfire` |
+| Health check | `http://localhost:5000/health` |
+| API base | `https://localhost:5001/api` |
+
+<Info>
+  The Hangfire dashboard requires an admin role. If you receive a `403 Forbidden`, verify that your JWT token belongs to a user with admin permissions.
+</Info>
+
+## Common issues
+
+<AccordionGroup>
+  <Accordion title="Database connection refused">
+    **Error:** `Npgsql.NpgsqlException: Connection refused`
+
+    1. Verify PostgreSQL is running:
+
+       ```bash
+       # macOS/Linux
+       sudo systemctl status postgresql
+
+       # Windows
+       pg_isready -U postgres
+       ```
+
+    2. Confirm the connection string in `appsettings.Development.json` matches your PostgreSQL host, port, username, and password.
+    3. Check that PostgreSQL is listening on port `5432` (the default). If you changed the port, update the connection string accordingly.
+  </Accordion>
+
+  <Accordion title="Port 5001 or 5000 already in use">
+    **Error:** `Address already in use: https://localhost:5001`
+
+    Find and kill the process using the port, or change the port in `src/UpdaterAgent.Api/Properties/launchSettings.json`:
+
+    ```json
+    "applicationUrl": "https://localhost:5002;http://localhost:5003"
+    ```
+
+    To kill the process on macOS/Linux:
+
+    ```bash
+    lsof -ti:5001 | xargs kill -9
+    ```
+
+    On Windows:
+
+    ```bash
+    netstat -ano | findstr :5001
+    taskkill /PID <process_id> /F
+    ```
+  </Accordion>
+
+  <Accordion title="NuGet package restore fails">
+    **Error:** `Unable to restore package`
+
+    Clear the local NuGet cache and retry:
+
+    ```bash
+    dotnet nuget locals all --clear
+    dotnet restore --force
+    ```
+
+    Verify your NuGet sources are configured correctly:
+
+    ```bash
+    dotnet nuget list source
+    ```
+  </Accordion>
+
+  <Accordion title="Hangfire dashboard returns 403 Forbidden">
+    **Error:** `403 Forbidden` on `/hangfire`
+
+    The Hangfire dashboard is protected by `HangfireAuthorizationFilter`, which requires an admin role. Ensure you are authenticated and that your user account has the admin role assigned.
+  </Accordion>
+
+  <Accordion title="External integration errors (QuickManage, Zippy, Samsara)">
+    **Error:** API connection failures for external services
+
+    This is expected for a local setup. External integrations are optional for working with core features such as Loads, Drivers, and Stops. To configure external integrations, add the relevant API keys and credentials to `appsettings.Development.json` under the appropriate configuration sections. See the [Integrations overview](/integrations/overview) for service-specific setup instructions.
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Architecture overview" icon="sitemap" href="/architecture/overview">
+    Learn how the four Clean Architecture layers fit together and how dependencies flow between them.
+  </Card>
+  <Card title="Conventions" icon="book" href="/development/conventions">
+    Review the Driver ID convention, Result pattern, background job rules, and DI registration patterns before writing code.
+  </Card>
+</CardGroup>

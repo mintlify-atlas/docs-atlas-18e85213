@@ -1,0 +1,222 @@
+---
+title: "Reports API: fleet load statistics and performance"
+description: "Reference for UpdaterAgent reporting: load summaries, driver performance, revenue analysis, custom reports, PDF/Excel export, and ETA job triggers."
+---
+
+The Reports API gives operations managers and dispatchers a data-driven view into fleet performance. You can pull pre-built load summaries, driver performance breakdowns, and revenue analyses, or generate a custom report with your own parameters. Completed reports can be exported to PDF or Excel. A companion controller lets you manually trigger the ETA recalculation job when you need up-to-date arrival estimates outside the normal schedule.
+
+## ReportsController — `/api/reports`
+
+Business intelligence and reporting. All endpoints require JWT authentication.
+
+### GET /api/reports/load-summary
+
+Return aggregate load statistics for the current company — including counts by status, total weight carried, and completion rates — for a given date range.
+
+**Required permission:** `Reports.View`
+
+<ParamField query="fromDate" type="string">
+  Start of the date range in ISO 8601 format (e.g., `2026-01-01`).
+</ParamField>
+
+<ParamField query="toDate" type="string">
+  End of the date range in ISO 8601 format (e.g., `2026-05-11`).
+</ParamField>
+
+<ParamField query="companyId" type="number">
+  Filter by a specific company. Defaults to the authenticated user's company.
+</ParamField>
+
+```bash cURL
+curl "https://your-domain.com/api/reports/load-summary?fromDate=2026-01-01&toDate=2026-05-11" \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+```json Response
+{
+  "totalLoads": 842,
+  "byStatus": {
+    "Delivered": 780,
+    "InTransit": 32,
+    "Dispatched": 18,
+    "Cancelled": 12
+  },
+  "completionRate": 0.926
+}
+```
+
+---
+
+### GET /api/reports/driver-performance
+
+Return per-driver performance metrics such as on-time delivery rate, average delay, and number of loads completed in the period.
+
+**Required permission:** `Reports.View`
+
+<ParamField query="fromDate" type="string">
+  Start of the reporting period in ISO 8601 format.
+</ParamField>
+
+<ParamField query="toDate" type="string">
+  End of the reporting period in ISO 8601 format.
+</ParamField>
+
+<ParamField query="driverId" type="number">
+  Filter to a single driver. Omit to return all drivers.
+</ParamField>
+
+```bash cURL
+curl "https://your-domain.com/api/reports/driver-performance?fromDate=2026-04-01&toDate=2026-04-30" \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+```json Response
+{
+  "items": [
+    {
+      "driverId": 7,
+      "driverName": "James Moretti",
+      "loadsCompleted": 28,
+      "onTimeRate": 0.89,
+      "averageDelayMinutes": 34
+    }
+  ]
+}
+```
+
+---
+
+### GET /api/reports/revenue-analysis
+
+Return revenue breakdown data for the current company — total billed, average revenue per load, and revenue grouped by broker.
+
+**Required permission:** `Reports.View`
+
+<ParamField query="fromDate" type="string">
+  Start of the reporting period in ISO 8601 format.
+</ParamField>
+
+<ParamField query="toDate" type="string">
+  End of the reporting period in ISO 8601 format.
+</ParamField>
+
+```bash cURL
+curl "https://your-domain.com/api/reports/revenue-analysis?fromDate=2026-01-01&toDate=2026-03-31" \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### POST /api/reports/custom
+
+Generate a custom report by specifying the metrics and dimensions you want. The report is stored server-side and a `reportId` is returned so you can export it.
+
+**Required permission:** `Reports.View`
+
+<ParamField body="metrics" type="array" required>
+  List of metric names to include (e.g., `["loadCount", "revenue", "averageDelay"]`).
+</ParamField>
+
+<ParamField body="dimensions" type="array">
+  Group-by dimensions (e.g., `["driverId", "brokerId"]`).
+</ParamField>
+
+<ParamField body="fromDate" type="string">
+  Start of the reporting period in ISO 8601 format.
+</ParamField>
+
+<ParamField body="toDate" type="string">
+  End of the reporting period in ISO 8601 format.
+</ParamField>
+
+**Response fields**
+
+<ResponseField name="reportId" type="string" required>
+  Unique identifier for the generated report. Pass this to `GET /api/reports/export/{reportId}` to download.
+</ResponseField>
+
+<ResponseField name="data" type="array" required>
+  The report rows matching the requested metrics and dimensions.
+</ResponseField>
+
+```bash cURL
+curl -X POST https://your-domain.com/api/reports/custom \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metrics": ["loadCount", "revenue"],
+    "dimensions": ["brokerId"],
+    "fromDate": "2026-01-01",
+    "toDate": "2026-03-31"
+  }'
+```
+
+---
+
+### GET /api/reports/export/\{reportId\}
+
+Export a previously generated report to PDF or Excel. Use the `format` query parameter to select the output format.
+
+**Required permission:** `Reports.Export`
+
+<ParamField path="reportId" type="string" required>
+  The report ID returned from `POST /api/reports/custom` or another report endpoint.
+</ParamField>
+
+<ParamField query="format" type="string">
+  Export format: `pdf` (default) or `excel`.
+</ParamField>
+
+```bash cURL
+curl "https://your-domain.com/api/reports/export/rpt_abc123?format=excel" \
+  -H "Authorization: Bearer <accessToken>" \
+  -o report.xlsx
+```
+
+<Note>
+  Supported export formats are **PDF** and **Excel** (`.xlsx`). The response `Content-Type` is `application/pdf` or `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` respectively.
+</Note>
+
+---
+
+## EtaBackgroundJobsController — `/api/eta-jobs`
+
+Manually trigger ETA recalculation jobs outside the normal background job schedule. Use these endpoints when you need immediate ETA updates — for example, after rerouting a driver or correcting stop data.
+
+### POST /api/eta-jobs/calculate
+
+Trigger an ETA calculation for a single load.
+
+**Required permission:** `EtaJobs.Execute`
+
+<ParamField body="loadId" type="number" required>
+  The load ID to recalculate ETA for.
+</ParamField>
+
+```bash cURL
+curl -X POST https://your-domain.com/api/eta-jobs/calculate \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"loadId": 1045}'
+```
+
+---
+
+### POST /api/eta-jobs/calculate-all
+
+Trigger ETA recalculation for **all loads currently in-transit**. This is useful after a routing engine change or a bulk rerouting event.
+
+**Required permission:** `EtaJobs.Execute`
+
+```bash cURL
+curl -X POST https://your-domain.com/api/eta-jobs/calculate-all \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+<Info>
+  Most list endpoints in the Reports API support pagination via `page` and `pageSize` query parameters. The default page size is 20 and the maximum is 100.
+</Info>
+
+<Tip>
+  Generate a custom report first with `POST /api/reports/custom`, then immediately export it with `GET /api/reports/export/{reportId}` in a two-step workflow. The report data is also returned inline in the POST response if you do not need the export.
+</Tip>

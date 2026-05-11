@@ -1,0 +1,141 @@
+---
+title: "Clean Architecture implementation in UpdaterAgent"
+description: "How UpdaterAgent's four-layer Clean Architecture enforces inward-only dependencies, the service file convention, result pattern, and DI registration."
+---
+
+UpdaterAgent follows Clean Architecture with a strict inward-only dependency rule: outer layers call inner layers, and inner layers never reference anything outside themselves. This keeps domain logic free of infrastructure concerns, makes services independently testable, and lets external integrations be swapped without touching business rules.
+
+## Dependency flow
+
+Dependencies flow in one direction only:
+
+```
+Api → Application → Infrastructure → Domain
+```
+
+- **Api** depends on **Application**
+- **Application** depends on **Infrastructure** and **Domain**
+- **Infrastructure** depends on **Domain**
+- **Domain** has zero project dependencies
+
+<Info>
+  The Domain layer is the innermost ring and must never import from Application, Infrastructure, or Api. Any violation breaks the architecture's testability guarantee.
+</Info>
+
+## Layer responsibilities
+
+| Layer | Project | Purpose | Key components |
+|---|---|---|---|
+| **Api** | `UpdaterAgent.Api` | HTTP handling, routing, auth enforcement, response formatting | Controllers, filters, SignalR hubs, middleware pipeline |
+| **Application** | `UpdaterAgent.Application` | Business logic, orchestration, background jobs | Feature services, Hangfire jobs, DTOs, `Dependencies.cs` |
+| **Infrastructure** | `UpdaterAgent.Infrastructure` | Database access, external API brokers, file I/O | `AppDbContext`, EF Core migrations, broker implementations |
+| **Domain** | `UpdaterAgent.Domain` | Core entities, enums, value objects, result abstractions | Entity classes, `ModelBase<TId>`, `AuditableModelBase<TId>`, `ITenantEntity` |
+
+## Service file convention
+
+Every feature module in the Application layer follows a four-file layout:
+
+```
+FeatureName/
+├── IFeatureService.cs          → Interface
+├── FeatureService.cs           → Public methods (API surface)
+├── FeatureService.Internals.cs → Private helpers (partial class)
+└── Contracts/                  → Request and response DTOs
+```
+
+Large services split their implementation across `FeatureService.cs` (public methods) and `FeatureService.Internals.cs` (private helpers) using C# partial classes. This keeps individual files focused without splitting the service into multiple classes.
+
+## Result pattern
+
+Services return `Result<T>` instead of throwing exceptions for expected business failures. This makes error paths explicit and avoids hidden control flow.
+
+```csharp
+Result<T>.Success(data)
+Result<T>.Failure(error)
+// Check .IsSuccess before accessing .Data
+```
+
+Usage in a controller:
+
+```csharp
+var result = await _loadService.GetLoadByIdAsync(id);
+if (result.IsSuccess)
+    return Ok(result.Value);
+
+return NotFound(result.Error);
+```
+
+`Result` and `Error` are defined in `UpdaterAgent.Domain/Abstractions/`. Domain-specific errors are grouped by entity:
+
+```csharp
+public static class LoadErrors
+{
+    public static Error NotFound(long id) =>
+        new("Load.NotFound", $"Load with ID {id} was not found");
+
+    public static Error InvalidStatus(LoadStatus current, LoadStatus target) =>
+        new("Load.InvalidStatus", $"Cannot transition from {current} to {target}");
+}
+```
+
+<Note>
+  Throw exceptions only for truly exceptional, unrecoverable conditions — not for expected business failures like "not found" or "invalid input".
+</Note>
+
+## Entity base classes
+
+| Class | Properties added | When to use |
+|---|---|---|
+| `ModelBase<TId>` | `Id`, `IsDeleted` | Simple entities without audit tracking |
+| `AuditableModelBase<TId>` | + `CreatedAt`, `UpdatedAt`, `CreatedBy`, `UpdatedBy` | Most domain entities |
+| `ITenantEntity` | `TenantId` (long) | Every entity that belongs to a tenant |
+
+New entities should inherit `AuditableModelBase<long>`, implement `ITenantEntity`, and add `[Index(nameof(TenantId))]` for query performance.
+
+## Dependency injection registration
+
+<Steps>
+  <Step title="Application services registered in Dependencies.cs">
+    Open `src/UpdaterAgent.Application/Dependencies.cs` and call `ConfigureApplicationServices()`. All application services are registered as `Scoped` unless they are stateless singletons.
+
+    ```csharp
+    // src/UpdaterAgent.Application/Dependencies.cs
+    public static IServiceCollection ConfigureApplicationServices(
+        this IServiceCollection services)
+    {
+        services.AddScoped<ILoadService, LoadService>();
+        services.AddScoped<IAuthService, AuthService>();
+        // ...
+        return services;
+    }
+    ```
+  </Step>
+  <Step title="Infrastructure services registered in Dependencies.cs">
+    Open `src/UpdaterAgent.Infrastructure/Dependencies.cs` and call `ConfigureInfrastructureServices()`. Register `AppDbContext`, brokers, and infrastructure helpers here.
+
+    ```csharp
+    // src/UpdaterAgent.Infrastructure/Dependencies.cs
+    public static IServiceCollection ConfigureInfrastructureServices(
+        this IServiceCollection services, IConfiguration configuration)
+    {
+        var dataSource = new NpgsqlDataSourceBuilder(connString)
+            .EnableDynamicJson()
+            .Build(); // Build once — NpgsqlDataSource is a singleton
+
+        services.AddDbContext<AppDbContext>(options =>
+            options.UseNpgsql(dataSource));
+
+        services.AddScoped<IQuickManageBroker, QuickManageBroker>();
+        // ...
+        return services;
+    }
+    ```
+  </Step>
+  <Step title="Both called from Program.cs">
+    `Program.cs` in the Api layer calls both extension methods during startup, completing the full DI graph before the application starts handling requests.
+  </Step>
+</Steps>
+
+<Tip>
+  The Infrastructure layer's `NpgsqlDataSource` must be built **once** outside the `AddDbContext` options lambda. Building it per scope causes an `ArgumentOutOfRangeException` on the second request.
+</Tip>

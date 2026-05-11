@@ -1,0 +1,81 @@
+---
+title: "Automated driver and dispatcher notifications system"
+description: "Telegram load status updates, delay and stationary driver alerts, sleep timer expiry notifications, and in-app notification management in UpdaterAgent TMS."
+---
+
+UpdaterAgent includes an automated notification system that keeps drivers and dispatchers informed throughout the load lifecycle. Notifications are delivered through Telegram for driver-facing messages and through in-app channels for dispatcher alerts. All notification behavior is configurable per company.
+
+<Info>
+Telegram notifications require a bot token to be configured in your company's notification settings. Without a valid bot token, Telegram messages will not be sent. Configure this under `/api/notification-settings`.
+</Info>
+
+## Telegram integration
+
+UpdaterAgent sends load status updates to driver Telegram groups on a scheduled basis. Groups are managed through the `GroupLinksController` at `/api/group-links`. Each driver can be linked to a Telegram group via the `GroupLinkId` field on the `Driver` entity.
+
+The `send:load-info` background job runs every hour (CRON: `0 */1 * * *`) and sends a formatted load information message to each group. The job respects per-company interval settings — if a company has configured a longer interval, the job checks the `BackgroundJob.LastRunnedAt` timestamp and skips companies that were notified too recently.
+
+The load info message typically includes:
+- Trip number and current load status
+- Next stop address and appointment time
+- Driver name and truck number
+- Current ETA to the next stop
+- Any active delay indicators
+
+## Alert types
+
+<AccordionGroup>
+  <Accordion title="Delay alerts">
+    Triggered when the system detects that a driver's projected arrival time at the next stop exceeds the scheduled `AppointmentDate` by more than the configured threshold. The alert is sent to the dispatcher assigned to the load and includes the load's trip number, the affected stop, and the calculated deviation. Delay detection runs as part of the ELD position import cycle every 25 minutes.
+  </Accordion>
+  <Accordion title="Stationary driver alerts">
+    Triggered by the `check:stationary-driver` job, which runs every 3 hours. If a driver on an active (`InTransit`) load has not moved between consecutive position checks, the system sends an alert to the dispatcher. This alert is delivered as both an in-app notification and a Telegram message to the relevant group.
+  </Accordion>
+  <Accordion title="Sleep timer expiry alerts">
+    Triggered by the `check:sleep-timer-expiry` job, which runs every minute. When a driver's sleep timer expires, the system:
+    - Sends a Telegram message to the driver's group
+    - Creates a high-priority ticket in the ticketing system
+    - Sends in-app notifications to all users in the Updater department
+    - Sends an in-app notification to the assigned dispatcher
+
+    This ensures the team is aware the driver is ready to resume work.
+  </Accordion>
+</AccordionGroup>
+
+## In-app notifications
+
+Dispatchers and other users receive in-app notifications for system events. These are accessible through the notifications API:
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/notifications` | List notifications for the current user |
+| `GET` | `/api/notifications/{id}` | Get a specific notification |
+| `PUT` | `/api/notifications/{id}/read` | Mark a single notification as read |
+| `PUT` | `/api/notifications/read-all` | Mark all notifications as read |
+| `DELETE` | `/api/notifications/{id}` | Delete a notification |
+
+All notification endpoints require only the `Authenticated` permission — no special role is needed to read your own notifications.
+
+## Notification settings
+
+Notification behavior is configurable per company through `/api/notification-settings`. Settings include:
+
+- **Telegram bot token** — required for all Telegram messages
+- **Send interval** — how frequently the `send:load-info` job sends messages for this company (overrides the default hourly schedule)
+- **Alert thresholds** — delay and deviation thresholds that trigger alerts
+
+The `BackgroundJob` entity tracks the last execution time per company and notification setting, enabling the interval logic without running a separate scheduler per company.
+
+## Telegram group links
+
+Telegram groups are registered in the system and linked to drivers via the `GroupLinksController`:
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/group-links` | List all registered Telegram groups |
+| `GET` | `/api/group-links/{id}` | Get group details |
+| `POST` | `/api/group-links` | Register a new Telegram group |
+| `PUT` | `/api/group-links/{id}` | Update group details |
+| `DELETE` | `/api/group-links/{id}` | Remove a group link |
+
+Once a group is registered, assign it to a driver by setting `Driver.GroupLinkId` to the group's ID. The driver will then receive load info messages and alerts in that group.

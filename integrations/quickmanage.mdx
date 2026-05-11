@@ -1,0 +1,153 @@
+---
+title: "QuickManage TMS integration and webhook setup guide"
+description: "Sync loads, drivers, trucks, and trailers from QuickManage via 3-hour polling and real-time webhooks, with HMAC-SHA256 signature verification per company."
+---
+
+QuickManage is the primary TMS platform for UpdaterAgent. It is the authoritative source of load, driver, truck, trailer, and broker records. UpdaterAgent maintains a two-way connection: it polls QuickManage every three hours to import fleet data, and QuickManage pushes real-time load events to UpdaterAgent via webhooks.
+
+## What data is synced
+
+The `QuickManageImport` background job runs every three hours and imports the following entities for each company:
+
+| Entity | QM endpoint | Local table |
+|---|---|---|
+| Drivers | `GetDriversAsync` | `drivers` |
+| Trucks | `GetTrucksAsync` | `trucks` |
+| Trailers | `GetTrailersAsync` | `trailers` |
+| Brokers | `GetBrokersAsync` | `brokers` |
+
+Loads are not polled on a schedule — they arrive via webhooks (see below) or can be triggered manually.
+
+<Note>
+  All imported records are scoped to the company's `TenantId`. The global EF Core query filter ensures data never leaks across tenants.
+</Note>
+
+## Driver ID mapping
+
+QuickManage assigns each driver a UUID (`ImportId`). Internally, UpdaterAgent uses a `long` primary key (`Driver.Id`). The mapping rule is:
+
+- `Driver.ImportId` (string) — the QuickManage GUID, used only during import and sync operations.
+- `Driver.Id` (long) — the local database PK, used for **all** internal operations including `Stop.AssignedDriverIds`.
+
+`Stop.AssignedDriverIds` stores `Driver.Id.ToString()`, not the QuickManage `ImportId`. This distinction is enforced by the LR-1053 convention.
+
+## Webhook integration
+
+QuickManage sends `load.created` and `load.updated` events to UpdaterAgent in real time. Each company gets its own webhook endpoint:
+
+```text
+POST /api/qm-webhooks/{companyId}
+```
+
+QuickManage includes the following headers on every delivery:
+
+| Header | Description |
+|---|---|
+| `X-Webhook-Signature` | HMAC-SHA256 hex digest of the request body |
+| `X-Webhook-ID` | Unique delivery identifier |
+| `X-Webhook-Event` | Event type, e.g. `load.created` |
+
+### Webhook security
+
+Incoming webhooks are verified with HMAC-SHA256 using the per-company secret stored in the `QmWebhookSubscription` entity. Constant-time comparison (`CryptographicOperations.FixedTimeEquals`) prevents timing attacks.
+
+```csharp
+public bool VerifyWebhookSignature(string payload, string signature, string secret)
+{
+    using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
+    var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(payload));
+    var expectedSignature = Convert.ToBase64String(hash);
+    return CryptographicOperations.FixedTimeEquals(
+        Encoding.UTF8.GetBytes(signature),
+        Encoding.UTF8.GetBytes(expectedSignature));
+}
+```
+
+The webhook receiver endpoint is public (`[AllowAnonymous]`) but is protected entirely by signature verification. Secrets are generated with `RandomNumberGenerator` (32 characters, cryptographically random).
+
+### Supported webhook events
+
+| Event | Action |
+|---|---|
+| `load.created` | Creates a new `Load` entity with stops, addresses, broker, and files |
+| `load.updated` | Updates the existing load, or creates it if not yet present |
+
+### Webhook event processing flow
+
+<Steps>
+  <Step title="Receive webhook">
+    QuickManage sends `POST /api/qm-webhooks/{companyId}` with a signed payload. The controller verifies the `X-Webhook-Signature` header before doing anything else.
+  </Step>
+  <Step title="Enqueue for processing">
+    After signature verification, the raw payload is enqueued as a Hangfire job (`QmWebhookProcessorJob`). The HTTP response returns `200 OK` immediately so QuickManage does not time out.
+  </Step>
+  <Step title="Process the event">
+    `QmWebhookProcessorJob` reads the `X-Webhook-Event` type and calls QuickManage to fetch the full load details via `GetTripAsync`. For `load.created` it creates a new load; for `load.updated` it updates or upserts.
+  </Step>
+  <Step title="Persist load data">
+    The load is saved with all associated stops, address records, broker reference, and any attached files. Multi-tenant isolation is applied automatically.
+  </Step>
+</Steps>
+
+## Webhook subscription management
+
+Each company subscribes independently. Subscriptions are managed at `/api/qm-webhook-subscriptions`:
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/qm-webhook-subscriptions/{companyId}/subscribe` | Register a webhook subscription with QuickManage |
+| `DELETE` | `/api/qm-webhook-subscriptions/{companyId}/unsubscribe` | Remove the subscription |
+| `GET` | `/api/qm-webhook-subscriptions/{companyId}` | Get current subscription status |
+
+Subscribe request body:
+
+```json
+{
+  "webhookBaseUrl": "https://your-public-domain.com"
+}
+```
+
+The final URL registered with QuickManage is `{webhookBaseUrl}/api/qm-webhooks/{companyId}`.
+
+### Auto-renewal
+
+QuickManage webhook subscriptions expire after 3 days without renewal. The `QmWebhookRenewalJob` runs every 48 hours and renews all active subscriptions automatically. No manual action is needed once subscribed.
+
+```text
+Day 0:   POST /api/qm-webhook-subscriptions/{companyId}/subscribe
+Every 48h: QmWebhookRenewalJob renews via QuickManage API
+Day 3+:  Subscription expires if renewal job has not run
+```
+
+<Warning>
+  If the `QmWebhookRenewalJob` is disabled or fails repeatedly, subscriptions will expire and load events will stop arriving. Monitor the Hangfire dashboard for renewal job failures.
+</Warning>
+
+## Manual import endpoints
+
+You can trigger data imports on demand without waiting for the scheduled job:
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/quickmanage/import-drivers` | Import all drivers for a company |
+| `POST` | `/api/quickmanage/import-trucks` | Import all trucks |
+| `POST` | `/api/quickmanage/import-loads` | Import recent loads |
+| `POST` | `/api/quickmanage/test-connection` | Verify credentials and connectivity |
+
+## TMS settings
+
+TMS credentials are stored per company via `/api/tms-settings`. The QuickManage broker generates a short-lived Bearer token on each import job run using the stored username and password:
+
+```json
+{
+  "QuickManage": {
+    "BaseUrl": "https://api.quickmanage.com",
+    "ApiKey": "xxx",
+    "HmacSecret": "xxx"
+  }
+}
+```
+
+<Note>
+  TMS settings are configured per company. A company without TMS settings configured will be skipped silently by all QuickManage import and webhook jobs.
+</Note>

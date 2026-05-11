@@ -1,0 +1,176 @@
+---
+title: "Code conventions and patterns in UpdaterAgent"
+description: "Service patterns, entity conventions, dependency injection, naming rules, and critical ID conventions that every UpdaterAgent contributor must follow."
+---
+
+Every feature in UpdaterAgent follows a set of shared conventions that keep the codebase predictable across 55+ modules. Understanding these patterns before writing your first line of code will save you from common pitfalls and ensure your changes pass code review without friction.
+
+## Service structure
+
+Each feature module in `src/UpdaterAgent.Application/` follows a strict 4-file layout. This separates the public API surface from internal helpers and keeps large services manageable through partial classes.
+
+```
+FeatureName/
+├── IFeatureService.cs          → Interface
+├── FeatureService.cs           → Public methods (API surface)
+├── FeatureService.Internals.cs → Private helper methods (partial class)
+└── Contracts/                  → Request/Response DTOs
+```
+
+DTOs in `Contracts/` use `record` types for immutability and value-based equality.
+
+## Result pattern
+
+Services never throw exceptions for expected business failures. Instead, every service method returns `Task<Result<T>>` or `Task<Result>`, defined in `Domain/Abstractions/Result.cs`.
+
+```csharp
+// Services return Task<Result<T>> or Task<Result>
+Result<T>.Success(data)   // Operation succeeded
+Result<T>.Failure(error)  // Expected business failure
+// Check .IsSuccess before accessing .Data
+```
+
+Always check `.IsSuccess` before reading `.Data`. Reserve exceptions for truly exceptional cases such as unrecoverable infrastructure failures.
+
+## Error definitions
+
+Define errors as static members of a dedicated error class for each feature. This makes error codes discoverable and prevents magic strings.
+
+```csharp
+public static class UpdateBoardErrors
+{
+    public static readonly Error LoadNotFound =
+        new("UpdateBoard.LoadNotFound", "Load was not found or is not active.");
+
+    public static readonly Error StopAlreadyCompleted =
+        new("UpdateBoard.StopAlreadyCompleted", "Cannot set a completed stop as heading.");
+
+    public static readonly Error StopNotAssignedToTruck =
+        new("UpdateBoard.StopNotAssignedToTruck", "Stop is not assigned to the given truck.");
+}
+```
+
+## Entity conventions
+
+All domain entities must follow these rules consistently to work correctly with EF Core global query filters and the multi-tenant isolation system.
+
+```csharp
+[Index(nameof(TenantId))]
+public class Driver : AuditableModelBase<long>, ITenantEntity
+{
+    [Column("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [Column("import_id")]
+    public string? ImportId { get; set; }
+
+    [Column("tenant_id")]
+    public long TenantId { get; set; }
+}
+```
+
+- Inherit `AuditableModelBase<long>` (adds `Id`, `IsDeleted`, `CreatedAt`, `UpdatedAt`, `CreatedBy`, `UpdatedBy`)
+- Implement `ITenantEntity` with a `TenantId` property
+- Add `[Index(nameof(TenantId))]` at the class level
+- Use `[Column("snake_case")]` on every property to match PostgreSQL naming
+
+<Warning>
+Never write a manual `.Where(x => x.TenantId == ...)` filter. The EF Core global query filter (`!e.IsDeleted && (IsSuperAdmin || e.TenantId == CurrentTenantId)`) applies this automatically to all `ITenantEntity` queries. Adding it manually causes redundant filtering and signals a misunderstanding of the isolation model.
+</Warning>
+
+## Driver ID convention (LR-1053)
+
+This is the most common source of data integrity bugs. Driver identity is split across two fields with entirely different purposes.
+
+<Warning>
+**Critical:** Using `ImportId` for internal operations (or vice versa) causes silent data mismatches that are difficult to trace. Read this section carefully before touching anything related to drivers or stops.
+</Warning>
+
+| Field | Type | Purpose |
+|---|---|---|
+| `Driver.Id` | `long` | Local database primary key — use for **all** internal operations |
+| `Driver.ImportId` | `string` | External TMS GUID — use **only** for import and sync with QuickManage |
+
+`Stop.AssignedDriverIds` stores `Driver.Id.ToString()`, **not** `ImportId`. When reading assigned drivers from a stop, parse back to `long` and look up by `Driver.Id`.
+
+## Background job conventions
+
+All Hangfire jobs must carry these two attributes and be registered in `JobsRegistrar.cs`:
+
+```csharp
+[DisableConcurrentExecution(timeoutInSeconds: 300)]
+[AutomaticRetry(Attempts = 0)]
+public class LoadInfoNotificationJob
+{
+    public async Task ExecuteAsync()
+    {
+        // Set tenant context before any DB queries
+        await _tenantContextService.SetAsync(tenantId);
+
+        // ... job logic
+    }
+}
+```
+
+- `[DisableConcurrentExecution(300)]` — prevents overlapping runs across distributed instances
+- `[AutomaticRetry(Attempts = 0)]` — disables automatic retry; failures are logged and alerted via Telegram
+- Always set tenant context via `ITenantContextService` before any database query
+
+## Dependency injection
+
+Application services are registered in `src/UpdaterAgent.Application/Dependencies.cs` inside `ConfigureApplicationServices()`. Infrastructure services go in the equivalent `Dependencies.cs` under `UpdaterAgent.Infrastructure`.
+
+```csharp
+// src/UpdaterAgent.Application/Dependencies.cs
+public static IServiceCollection ConfigureApplicationServices(
+    this IServiceCollection services)
+{
+    services.AddScoped<ILoadService, LoadService>();
+    services.AddScoped<IStopService, StopService>();
+    services.AddScoped<IUpdateBoardService, UpdateBoardService>();
+    // ...
+    return services;
+}
+```
+
+Register all services as `Scoped` unless there is a specific reason for a different lifetime (e.g., `IDeviationCalculator` is a singleton because it is stateless and expensive to initialize).
+
+## API controller conventions
+
+Every controller in `Controllers/v1/` follows the same attribute pattern:
+
+```csharp
+[Authorize]
+[ApiController]
+[Route("api/v1/[controller]")]
+public class LoadsController : ControllerBase
+{
+    [HasPermission(EnumPermission.LoadsRead)]
+    [HttpGet("{id}")]
+    public async Task<IResult> GetAsync(long id)
+    {
+        var result = await _loadService.GetLoadDetailedAsync(id);
+        return result.IsSuccess
+            ? Results.Ok(result.Data)
+            : result.ToProblemDetails();
+    }
+}
+```
+
+- `[Authorize]` — every endpoint requires a valid JWT unless explicitly exempted
+- `[ApiController]` — enables automatic model validation and binding
+- `[Route("api/v1/[controller]")]` — all routes are versioned under `v1`
+- `[HasPermission(...)]` — permission-based authorization using `EnumPermission`
+
+## Branching and workflow
+
+| Rule | Value |
+|---|---|
+| Base branch | `dev` |
+| Feature branch | `feature/PROJ-123-short-description` |
+| Bug fix branch | `fix/PROJ-123-short-description` |
+| PR target | `dev` |
+
+<Note>
+Never merge your own PR unless you have been explicitly authorized to do so. All PRs require at least one technical reviewer approval before merging.
+</Note>

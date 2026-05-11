@@ -1,0 +1,179 @@
+---
+title: "ELD provider integrations: Zippy, Samsara, UTrackin"
+description: "Connect Zippy, Samsara, UTrackin, and LevelELD to import real-time vehicle positions every 25 minutes for ETA calculations and delay detection per company."
+---
+
+UpdaterAgent integrates with multiple Electronic Logging Device (ELD) providers to import real-time vehicle GPS positions. Position data feeds the hybrid routing engine, which calculates ETAs, detects delays, and updates load statuses for active trips. Each company selects one ELD provider; the system handles polling, credential management, and data retention automatically.
+
+## Supported providers
+
+| Provider | Auth method | Position data included |
+|---|---|---|
+| Zippy | `x-api-key` + `provider-token` headers | Latitude, longitude, rotation, timestamp |
+| Samsara | Bearer token (API key) | Vehicle location, speed, mileage |
+| UTrackin | OAuth 2.0 with token refresh | Vehicle position, driver name |
+| LevelELD | API credentials | ELD position data |
+| OnTimeLogs | API credentials | OnTime driver logs |
+
+## How position data is imported
+
+The `LogisticsCoreImportJob` (also referred to as `eld-import:positions`) runs every 25 minutes via Hangfire. For each company with an active ELD configuration:
+
+1. Retrieve ELD credentials from the company's ELD settings.
+2. Call the provider API to get current unit positions.
+3. Filter out units with no coordinates.
+4. Map each unit to an `EldPosition` record and persist to the database.
+5. Trigger ETA recalculation for loads with active drivers.
+
+```csharp
+// EldPosition entity fields populated per position import
+public class EldPosition
+{
+    public long TruckId { get; set; }       // Matched by VIN against local Truck records
+    public double Latitude { get; set; }
+    public double Longitude { get; set; }
+    public double? Speed { get; set; }
+    public int? Heading { get; set; }
+    public string? VehicleId { get; set; }
+    public DateTime RecordedAt { get; set; }
+    public EldPositionSource Source { get; set; }  // Zippy, Samsara, UTrackin, ...
+    public string? TripStatus { get; set; }         // OnSchedule, Behind, Critical
+    public long? OsrmRemainingDuration { get; set; }
+    public double? DeviationPct { get; set; }
+}
+```
+
+## Data retention
+
+ELD positions are kept in a **72-hour rolling window**. The `ClearUnnecessaryPositionsAsync` routine removes records older than three days to control database growth. Historical trend queries can use the retained window for per-truck deviation analysis.
+
+## Configuration per company
+
+ELD credentials are stored and managed per company via the ELD settings API:
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/eld-settings` | Create ELD settings for a company |
+| `PUT` | `/api/eld-settings/{companyId}` | Update existing ELD settings |
+| `GET` | `/api/eld-settings/{companyId}` | Retrieve current ELD settings |
+| `POST` | `/api/eld-settings/test-connection` | Verify credentials against the provider |
+
+API keys and secret tokens are **encrypted at rest**. USDOT numbers and non-sensitive identifiers are stored as plain text.
+
+<Note>
+  If a company has no ELD settings configured, the import job skips it silently. No error is raised for unconfigured companies.
+</Note>
+
+## Provider-specific setup
+
+<Tabs>
+  <Tab title="Zippy">
+    Zippy authenticates using two custom headers on every request. Credentials are issued directly by Zippy.
+
+    **Required credentials:**
+
+    | Field | Header sent | Encrypted at rest |
+    |---|---|---|
+    | `ApiKey` | `x-api-key` | Yes |
+    | `ProviderToken` | `provider-token` | Yes |
+    | `Usdot` | Path parameter in URL | No |
+
+    **Create ELD settings for Zippy:**
+
+    ```json
+    POST /api/eld-settings
+    {
+      "companyId": 1,
+      "zippySetting": {
+        "apiKey": "your-api-key",
+        "providerToken": "your-provider-token",
+        "usdot": "1234567"
+      }
+    }
+    ```
+
+    The broker calls `GET /api/v2/units-by-usdot/{usdot}` against `https://read.zippyeld.com/`. Units without `coordinates` in the response are ignored.
+
+    **Example response from Zippy:**
+
+    ```json
+    {
+      "units": [
+        {
+          "truck_number": "114195",
+          "vin": "3AKJHHDRXSSVT2519",
+          "id": 3897,
+          "coordinates": {
+            "lat": 39.41371536254883,
+            "lng": -84.15188598632812
+          },
+          "rotation": 303,
+          "timestamp": "2026-02-17T12:57:57.896Z"
+        }
+      ]
+    }
+    ```
+  </Tab>
+  <Tab title="Samsara">
+    Samsara uses a static API key sent as a Bearer token. The same key is valid for all fleet vehicles under the account.
+
+    **Required credentials:**
+
+    | Field | Description |
+    |---|---|
+    | `ApiToken` | Bearer token from Samsara dashboard |
+
+    **Create ELD settings for Samsara:**
+
+    ```json
+    POST /api/eld-settings
+    {
+      "companyId": 2,
+      "samsamaraSetting": {
+        "apiToken": "samsara_api_token_value"
+      }
+    }
+    ```
+
+    The broker calls `GetVehicleLocationsAsync` to retrieve current positions and `GetVehicleStatsAsync` for mileage and engine hours. Polling frequency is configurable per company.
+  </Tab>
+  <Tab title="UTrackin">
+    UTrackin requires OAuth 2.0 with automatic token refresh. The broker calls `GetAccessTokenAsync` before each import run and re-fetches a token when the existing one expires.
+
+    **Required credentials:**
+
+    | Field | Description |
+    |---|---|
+    | `ClientId` | OAuth 2.0 client ID |
+    | `ClientSecret` | OAuth 2.0 client secret |
+
+    **Create ELD settings for UTrackin:**
+
+    ```json
+    POST /api/eld-settings
+    {
+      "companyId": 3,
+      "uTrackinSetting": {
+        "clientId": "your-client-id",
+        "clientSecret": "your-client-secret"
+      }
+    }
+    ```
+
+    <Note>
+      The UTrackin broker handles OAuth token refresh automatically. You do not need to rotate credentials manually; the `TokenRefresh` background job keeps tokens valid.
+    </Note>
+
+    The broker calls `GetVehiclePositionsAsync` after obtaining a valid access token. Driver names are included in the UTrackin response, unlike Zippy.
+  </Tab>
+</Tabs>
+
+## Multiple ELD providers per deployment
+
+A single UpdaterAgent deployment can serve companies on different ELD platforms simultaneously. The import job iterates over all companies, reads each company's configured provider from `EldSetting`, and dispatches to the correct broker:
+
+- Company A → Zippy broker
+- Company B → Samsara broker
+- Company C → UTrackin broker
+
+Companies with no ELD configuration are skipped. The ELD provider selection is changed by updating the company's ELD settings via `PUT /api/eld-settings/{companyId}`.

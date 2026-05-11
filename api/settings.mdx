@@ -1,0 +1,252 @@
+---
+title: "Settings API: configure TMS, ELD, and notifications"
+description: "Reference for UpdaterAgent configuration: TMS and ELD credentials, notification rules, bot permissions, tenants, companies, and user account management."
+---
+
+The Settings API exposes every configuration surface in UpdaterAgent — from global system preferences and third-party integration credentials to per-user notification rules and Telegram bot permissions. Most endpoints are company-scoped and enforce specific permission codes so that only authorized administrators can make changes. The same section also covers tenant and company management for multi-tenant deployments, and full user account administration including activation, deactivation, and password reset.
+
+## GeneralSettingsController — `/api/general-settings`
+
+Read and update system-wide general settings.
+
+| Method | Endpoint | Permission | Description |
+|--------|----------|------------|-------------|
+| GET | `/api/general-settings` | `Settings.View` | Get current general settings |
+| PUT | `/api/general-settings` | `Settings.Update` | Update general settings |
+
+```bash cURL
+curl https://your-domain.com/api/general-settings \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+## TmsSettingsController — `/api/tms-settings`
+
+Configure the TMS integration for a company. Each company stores its own TMS credentials independently.
+
+### GET /api/tms-settings
+
+Retrieve the current TMS integration settings for the authenticated user's company.
+
+**Required permission:** `TmsSettings.View`
+
+**Response fields**
+
+<ResponseField name="provider" type="string" required>
+  The configured TMS provider (e.g., `QuickManage`).
+</ResponseField>
+
+<ResponseField name="apiUrl" type="string" required>
+  The base URL used to call the TMS API.
+</ResponseField>
+
+<ResponseField name="isConnected" type="boolean" required>
+  Whether the last connection test succeeded.
+</ResponseField>
+
+---
+
+### PUT /api/tms-settings
+
+Update TMS integration credentials and configuration.
+
+**Required permission:** `TmsSettings.Update`
+
+<ParamField body="apiUrl" type="string">
+  The TMS API base URL.
+</ParamField>
+
+<ParamField body="apiKey" type="string">
+  API key or bearer token for authenticating with the TMS.
+</ParamField>
+
+```bash cURL
+curl -X PUT https://your-domain.com/api/tms-settings \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "apiUrl": "https://api.quickmanage.com",
+    "apiKey": "qm_live_abc123"
+  }'
+```
+
+---
+
+### POST /api/tms-settings/test-connection
+
+Test the current TMS configuration by making a lightweight call to the TMS API. Returns success or an error describing the failure.
+
+**Required permission:** `TmsSettings.Update`
+
+```bash cURL
+curl -X POST https://your-domain.com/api/tms-settings/test-connection \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+```json Response (success)
+{ "success": true, "message": "Connection to QuickManage established." }
+```
+
+```json Response (failure)
+{ "success": false, "message": "401 Unauthorized: Invalid API key." }
+```
+
+---
+
+## EldSettingsController — `/api/eld-settings`
+
+Configure the ELD (Electronic Logging Device) integration for a company. Supports UTrackin, Zippy, Samsara, LevelELD, and OnTimeLogs.
+
+### GET /api/eld-settings
+
+Retrieve the current ELD integration settings for the authenticated user's company.
+
+**Required permission:** `EldSettings.View`
+
+---
+
+### PUT /api/eld-settings
+
+Update ELD credentials and configuration.
+
+**Required permission:** `EldSettings.Update`
+
+<ParamField body="provider" type="string">
+  ELD provider identifier (e.g., `UTrackin`, `Zippy`, `Samsara`).
+</ParamField>
+
+<ParamField body="apiKey" type="string">
+  API key or credentials for the ELD provider.
+</ParamField>
+
+---
+
+### POST /api/eld-settings/test-connection
+
+Test the current ELD configuration. Returns whether the connection succeeds and any error detail.
+
+**Required permission:** `EldSettings.Update`
+
+```bash cURL
+curl -X POST https://your-domain.com/api/eld-settings/test-connection \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+## NotificationSettingsController — `/api/notification-settings`
+
+Control which system events trigger in-app and Telegram notifications, configurable per user or company.
+
+| Method | Endpoint | Permission | Description |
+|--------|----------|------------|-------------|
+| GET | `/api/notification-settings` | `Settings.View` | Get current notification settings |
+| PUT | `/api/notification-settings` | `Settings.Update` | Update notification settings |
+
+---
+
+## BotPermissionsController — `/api/bot-permissions`
+
+Manage which actions the Telegram bot is allowed to perform on behalf of your company.
+
+| Method | Endpoint | Permission | Description |
+|--------|----------|------------|-------------|
+| GET | `/api/bot-permissions` | `BotPermissions.View` | List all bot permissions |
+| PUT | `/api/bot-permissions/{id}` | `BotPermissions.Update` | Enable or disable a specific bot permission |
+
+---
+
+## SettingCategoriesController — `/api/setting-categories`
+
+Retrieve the list of available setting categories. Used to render grouped settings UI.
+
+| Method | Endpoint | Permission | Description |
+|--------|----------|------------|-------------|
+| GET | `/api/setting-categories` | `Settings.View` | List all setting categories |
+
+---
+
+## QuickActionButtonsController — `/api/quick-action-buttons`
+
+Create and manage the customizable quick-action buttons that appear in the dispatcher UI.
+
+| Method | Endpoint | Permission | Description |
+|--------|----------|------------|-------------|
+| GET | `/api/quick-action-buttons` | `QuickActions.View` | List all quick action buttons |
+| POST | `/api/quick-action-buttons` | `QuickActions.Create` | Create a quick action button |
+| PUT | `/api/quick-action-buttons/{id}` | `QuickActions.Update` | Update a quick action button |
+| DELETE | `/api/quick-action-buttons/{id}` | `QuickActions.Delete` | Delete a quick action button |
+
+---
+
+## TenantsController — `/api/tenants`
+
+Multi-tenant organization management. Tenant records sit at the top of the hierarchy and contain one or more companies.
+
+| Method | Endpoint | Permission | Description |
+|--------|----------|------------|-------------|
+| GET | `/api/tenants` | `Tenants.View` | List all tenants |
+| GET | `/api/tenants/{id}` | `Tenants.View` | Get a tenant by ID |
+| POST | `/api/tenants` | `Tenants.Create` | Create a new tenant |
+| PUT | `/api/tenants/{id}` | `Tenants.Update` | Update tenant details |
+| DELETE | `/api/tenants/{id}` | `Tenants.Delete` | Delete a tenant |
+
+---
+
+## CompanyController — `/api/companies`
+
+Company management within tenants. A tenant can have multiple companies, each with their own settings, users, and loads.
+
+| Method | Endpoint | Permission | Description |
+|--------|----------|------------|-------------|
+| GET | `/api/companies` | `Companies.View` | List companies (filtered by tenant) |
+| GET | `/api/companies/{id}` | `Companies.View` | Get a company by ID |
+| POST | `/api/companies` | `Companies.Create` | Create a new company |
+| PUT | `/api/companies/{id}` | `Companies.Update` | Update company details |
+| DELETE | `/api/companies/{id}` | `Companies.Delete` | Delete a company |
+| GET | `/api/companies/{id}/statistics` | `Companies.View` | Get aggregate statistics for a company |
+
+```bash cURL
+curl https://your-domain.com/api/companies/3/statistics \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+## UsersController — `/api/users`
+
+Full user account management including creation, updates, activation/deactivation, and password reset.
+
+### Standard CRUD
+
+| Method | Endpoint | Permission | Description |
+|--------|----------|------------|-------------|
+| GET | `/api/users` | `Users.View` | List users with pagination |
+| GET | `/api/users/{id}` | `Users.View` | Get a user by ID |
+| POST | `/api/users` | `Users.Create` | Create a new user |
+| PUT | `/api/users/{id}` | `Users.Update` | Update user details |
+| DELETE | `/api/users/{id}` | `Users.Delete` | Delete a user |
+
+### Account management
+
+| Method | Endpoint | Permission | Description |
+|--------|----------|------------|-------------|
+| GET | `/api/users/me` | Authenticated | Get the current user's profile |
+| PUT | `/api/users/{id}/activate` | `Users.Update` | Activate a user account |
+| PUT | `/api/users/{id}/deactivate` | `Users.Update` | Deactivate a user account |
+| POST | `/api/users/{id}/reset-password` | `Users.Update` | Send a password reset for a user |
+
+```bash cURL
+# Get current user profile
+curl https://your-domain.com/api/users/me \
+  -H "Authorization: Bearer <accessToken>"
+
+# Deactivate a user
+curl -X PUT https://your-domain.com/api/users/9/deactivate \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+<Info>
+  Deactivated users retain their records and audit history but cannot log in. Reactivate them at any time using `PUT /api/users/{id}/activate`.
+</Info>

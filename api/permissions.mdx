@@ -1,0 +1,279 @@
+---
+title: "Roles, permissions, and RBAC: complete API reference"
+description: "Reference for UpdaterAgent's role-based access control system: list permissions and roles, assign permissions to roles, and read the audit log trail."
+---
+
+UpdaterAgent uses role-based access control (RBAC) to authorize every API request. Each user is assigned a role; each role holds a set of granular permission keys. On login, the user's permissions are embedded in the JWT as a flattened list of strings, so authorization checks are fast and require no additional database lookups. This page documents the endpoints for reading permissions, managing roles, and querying the audit log.
+
+## How permissions appear in the JWT
+
+After a successful login, the JWT payload includes a `permissions` claim containing a JSON-serialized array of permission key strings:
+
+```json
+{
+  "sub": "123",
+  "email": "user@example.com",
+  "tenantId": "1",
+  "sessionId": "456",
+  "permissions": ["Loads.View", "Loads.Create", "Drivers.View"],
+  "iat": 1234567890,
+  "exp": 1234571490
+}
+```
+
+Each protected endpoint declares the permission it requires. If the token's `permissions` array does not contain that key, the API returns `403 Forbidden`.
+
+```json
+{
+  "error": {
+    "code": "Auth.Forbidden",
+    "message": "You do not have permission to perform this action"
+  }
+}
+```
+
+---
+
+## Permissions endpoints
+
+### GET /api/permissions
+
+List all permissions in the system. Requires the `Permissions.View` permission.
+
+**Response**
+
+<ResponseField name="id" type="number" required>
+  Numeric enum value identifying the permission.
+</ResponseField>
+
+<ResponseField name="key" type="string" required>
+  The permission key string embedded in JWTs (e.g., `"Loads.View"`).
+</ResponseField>
+
+<ResponseField name="description" type="string">
+  Human-readable description of what this permission grants.
+</ResponseField>
+
+```bash cURL
+curl https://your-domain.com/api/permissions \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### GET /api/permissions/groups
+
+Return all permissions organized by category. Useful for building role management UIs. Requires the `Permissions.View` permission.
+
+**Response**
+
+<ResponseField name="groupName" type="string" required>
+  Category name (e.g., `"Load Management"`).
+</ResponseField>
+
+<ResponseField name="permissions" type="object[]" required>
+  Array of permission objects belonging to this group.
+
+  <Expandable title="permissions properties">
+    <ResponseField name="id" type="number" required>
+      Numeric enum value for the permission.
+    </ResponseField>
+    <ResponseField name="key" type="string" required>
+      Permission key string used in JWT claims.
+    </ResponseField>
+    <ResponseField name="description" type="string">
+      What this permission allows.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+```bash cURL
+curl https://your-domain.com/api/permissions/groups \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+## Permission groups
+
+The system contains 100+ individual permissions organized into the following categories. All permission keys follow the `Resource.Action` naming convention.
+
+<AccordionGroup>
+  <Accordion title="Load Management">
+    | Permission key | Description |
+    |---|---|
+    | `Loads.View` | View loads and their details |
+    | `Loads.Create` | Create new loads |
+    | `Loads.Update` | Update load details, assign drivers, change status |
+    | `Loads.Delete` | Delete loads and their files |
+    | `Loads.Export` | Export load data |
+  </Accordion>
+
+  <Accordion title="Driver Management">
+    | Permission key | Description |
+    |---|---|
+    | `Drivers.View` | View driver roster and details |
+    | `Drivers.Create` | Add new drivers |
+    | `Drivers.Update` | Edit driver details, manage sleep timers |
+    | `Drivers.Delete` | Remove drivers |
+  </Accordion>
+
+  <Accordion title="System Administration">
+    | Permission key | Description |
+    |---|---|
+    | `Users.View` | List and view user accounts |
+    | `Users.Create` | Create new user accounts |
+    | `Users.Update` | Edit users, activate, deactivate, reset passwords |
+    | `Users.Delete` | Delete user accounts |
+    | `Roles.View` | View roles and their permissions |
+    | `Roles.Create` | Create new roles |
+    | `Roles.Update` | Edit roles and assign permissions |
+    | `Roles.Delete` | Delete roles |
+    | `Permissions.View` | List all permissions |
+    | `AuditLogs.View` | Read the system audit trail |
+  </Accordion>
+
+  <Accordion title="Truck & Trailer Management">
+    | Permission key | Description |
+    |---|---|
+    | `Trucks.View` | View truck fleet |
+    | `Trucks.Create` | Add trucks |
+    | `Trucks.Update` | Edit truck details |
+    | `Trucks.Delete` | Remove trucks |
+    | `Trailers.View` | View trailer fleet |
+    | `Trailers.Create` | Add trailers |
+    | `Trailers.Update` | Edit trailer details |
+    | `Trailers.Delete` | Remove trailers |
+  </Accordion>
+
+  <Accordion title="Additional permission groups">
+    The system includes 100+ permissions across many other resource categories including Brokers, Tenants, Companies, Stops, Tickets, Settings, Reports, Notifications, Email, and Integrations. Use `GET /api/permissions/groups` to retrieve the complete categorized list.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Roles endpoints
+
+### GET /api/roles
+
+List all roles defined within the current tenant. Requires the `Roles.View` permission.
+
+**Response**
+
+<ResponseField name="id" type="number" required>
+  Role ID.
+</ResponseField>
+
+<ResponseField name="name" type="string" required>
+  Role display name.
+</ResponseField>
+
+<ResponseField name="permissions" type="string[]">
+  Array of permission key strings assigned to this role.
+</ResponseField>
+
+```bash cURL
+curl https://your-domain.com/api/roles \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### POST /api/roles
+
+Create a new role for the current tenant. Requires the `Roles.Create` permission.
+
+**Request body**
+
+<ParamField body="name" type="string" required>
+  A unique display name for the role within the tenant.
+</ParamField>
+
+```bash cURL
+curl -X POST https://your-domain.com/api/roles \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Dispatcher Supervisor"}'
+```
+
+---
+
+### POST /api/roles/{id}/permissions
+
+Assign a set of permissions to a role, replacing any previously assigned permissions. Requires the `Roles.Update` permission.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The ID of the role to update.
+</ParamField>
+
+**Request body**
+
+<ParamField body="permissionIds" type="number[]" required>
+  Array of numeric permission IDs to assign to the role. Retrieve valid IDs from `GET /api/permissions`.
+</ParamField>
+
+```bash cURL
+curl -X POST https://your-domain.com/api/roles/7/permissions \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"permissionIds": [1, 2, 3, 10, 11]}'
+```
+
+---
+
+## Built-in roles
+
+UpdaterAgent ships with the following default roles. They can be used as-is or serve as a reference when creating custom roles.
+
+| Role | Access level |
+|---|---|
+| **System Admin** | All permissions across the entire system |
+| **Dispatcher** | Load, driver, and truck management |
+| **Viewer** | Read-only access to loads, drivers, and related data |
+| **Custom roles** | Tenant-defined sets of any permissions from the full permission list |
+
+<Note>
+  Roles are scoped per tenant. A role created in one tenant is not visible or applicable in another.
+</Note>
+
+---
+
+## Audit logs
+
+### GET /api/audit-logs
+
+Retrieve the system audit trail showing who did what and when. Requires the `AuditLogs.View` permission. Supports standard pagination via `page` and `pageSize` query parameters.
+
+**Response**
+
+<ResponseField name="id" type="number" required>
+  Unique audit log entry ID.
+</ResponseField>
+
+<ResponseField name="userId" type="number" required>
+  ID of the user who performed the action.
+</ResponseField>
+
+<ResponseField name="action" type="string" required>
+  Description of the action performed.
+</ResponseField>
+
+<ResponseField name="entityType" type="string">
+  The type of resource that was affected (e.g., `"Load"`, `"Driver"`).
+</ResponseField>
+
+<ResponseField name="entityId" type="number">
+  ID of the affected resource.
+</ResponseField>
+
+<ResponseField name="createdAt" type="string" required>
+  ISO 8601 timestamp when the action occurred.
+</ResponseField>
+
+```bash cURL
+curl "https://your-domain.com/api/audit-logs?page=1&pageSize=20" \
+  -H "Authorization: Bearer <accessToken>"
+```

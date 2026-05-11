@@ -1,0 +1,117 @@
+---
+title: "External integrations overview for UpdaterAgent TMS"
+description: "UpdaterAgent connects 18 external brokers covering TMS, ELD, routing, geocoding, email, and AI behind a unified broker pattern in the Infrastructure layer."
+---
+
+UpdaterAgent is built around a hub-and-spoke integration model: every external service is encapsulated behind a typed broker interface in the Infrastructure layer, keeping business logic independent of third-party API details. This architecture supports 18 brokers today, covering the full logistics stack from load import to real-time vehicle tracking and AI-powered document analysis.
+
+## Integration summary
+
+| Broker | Category | Purpose | Auth method | Frequency |
+|---|---|---|---|---|
+| QuickManage | TMS | Load, driver, truck data + webhooks | Bearer + HMAC | Polling 3hr + webhooks |
+| Zippy | ELD | Vehicle position tracking | API creds | Polling 25min |
+| Samsara | ELD | Alternative ELD platform | API token | Configurable |
+| UTrackin | ELD | Vehicle tracking | OAuth 2.0 | Configurable |
+| LevelEld | ELD | Level ELD tracking | API creds | Configurable |
+| Telegram | Comm | Driver notifications, alerts | Bot token | Scheduled + on-demand |
+| Nylas | Email | Email processing, ratecon extraction | OAuth 2.0 | Webhooks |
+| Google Map | Routing | Route optimization, geocoding, ETA | API key | On-demand (fallback) |
+| OSRM | Routing | Open-source routing (primary) | None | On-demand |
+| Valhalla | Routing | Alternative routing engine | None | On-demand |
+| HereRouting | Routing | HERE Maps routing | API key | On-demand |
+| Nominatim | Geocoding | Address geocoding fallback | None | On-demand |
+| GeoNames | Geocoding | Timezone lookup | None | On-demand |
+| AskAI | AI | Document analysis, ticket suggestions | API key | On-demand |
+| Eia | Data | Energy and fuel data | API key | Scheduled |
+| OnTimeLogs | Logging | OnTime driver logs | API creds | Polling |
+| RTA | Analytics | Real-time analytics | API key | On-demand |
+
+## Broker pattern
+
+Every integration in UpdaterAgent follows a four-part structure defined in `src/UpdaterAgent.Infrastructure/Brokers/`.
+
+**Interface** — a typed contract that services depend on, never the concrete HTTP client:
+
+```csharp
+public interface IQuickManageBroker
+{
+    Task<Result<AccessTokenResponse>> GenerateTokenAsync(AccessTokenRequest request);
+    Task<Result<List<DriverResponse>>> GetDriversAsync(string token, long companyId);
+    Task<Result<TripResponse>> GetTripAsync(string token, string tripId);
+    // ...
+}
+```
+
+**Implementation** — a concrete class using `HttpClient`, registered as a scoped service:
+
+```csharp
+builder.Services.AddScoped<IQuickManageBroker, QuickManageBroker>();
+builder.Services.AddScoped<IZippyBroker, ZippyBroker>();
+builder.Services.AddScoped<ITelegramBotBroker, TelegramBotBroker>();
+```
+
+**Configuration** — credentials and URLs stored in `appsettings.json` or environment variables:
+
+```json
+{
+  "QuickManage": {
+    "BaseUrl": "https://api.quickmanage.com",
+    "ApiKey": "xxx",
+    "HmacSecret": "xxx"
+  },
+  "Zippy": {
+    "BaseUrl": "https://read.zippyeld.com/",
+    "UnitsUri": "api/v2/units-by-usdot"
+  }
+}
+```
+
+**Errors** — a static class of typed `Result` errors so callers receive structured failures instead of exceptions:
+
+```csharp
+public static class QuickManageErrors
+{
+    public static Error AuthenticationFailed =>
+        new("QM.AuthenticationFailed", "Failed to authenticate with QuickManage");
+
+    public static Error ApiCallFailed(string endpoint) =>
+        new("QM.ApiCallFailed", $"API call to {endpoint} failed");
+}
+```
+
+<Note>
+  Each broker directory under `Brokers/` contains exactly these four concerns: `IBroker.cs`, `Broker.cs`, `BrokerErrors.cs`, and a `Contracts/` folder for config and response DTOs.
+</Note>
+
+## Per-company configuration
+
+Each company can activate a different set of integrations. The `IntegrationProvider` entity stores per-company credentials and the active provider selection:
+
+```csharp
+public class IntegrationProvider
+{
+    public long CompanyId { get; set; }
+    public EIntegrationProviderKey Provider { get; set; }  // QuickManage, Zippy, Samsara, ...
+    public string? ApiKey { get; set; }
+    public string? ApiSecret { get; set; }
+    public bool IsActive { get; set; }
+    public Dictionary<string, string> Settings { get; set; }
+}
+```
+
+For example, Company A may use QuickManage + Zippy, while Company B uses QuickManage + Samsara. Companies without a TMS integration fall back to manual data entry.
+
+## Detailed integration guides
+
+<CardGroup cols={3}>
+  <Card title="QuickManage" icon="building" href="/integrations/quickmanage">
+    TMS sync, webhook setup, driver ID mapping, and manual import endpoints.
+  </Card>
+  <Card title="ELD providers" icon="truck" href="/integrations/eld-providers">
+    Zippy, Samsara, UTrackin, and LevelELD — position polling and ELD settings API.
+  </Card>
+  <Card title="Routing and geocoding" icon="map" href="/integrations/routing-geocoding">
+    Hybrid OSRM + Google Maps routing strategy and geocoding fallback chain.
+  </Card>
+</CardGroup>

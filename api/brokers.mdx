@@ -1,0 +1,359 @@
+---
+title: "Brokers API: manage broker and customer rate profiles"
+description: "Reference for broker and customer profiles, geocoded addresses, country and state data, and driver rate savings records in UpdaterAgent TMS."
+---
+
+The Brokers API covers everything related to the companies and individuals that dispatch freight to your fleet. Broker records store regulatory identifiers (MC and DOT numbers) alongside contact details, and are automatically created or updated when QuickManage syncs load data. The related Addresses API enriches location data with geocoded latitude/longitude coordinates. Country and state reference endpoints are public and require no authentication.
+
+## BrokersController — `/api/brokers`
+
+Manage customer and broker profiles. All endpoints require JWT authentication.
+
+### GET /api/brokers
+
+List all brokers for the current company, with optional text search and pagination.
+
+**Required permission:** `Brokers.View`
+
+```bash cURL
+curl https://your-domain.com/api/brokers \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### GET /api/brokers/\{id\}
+
+Retrieve a single broker by its ID.
+
+**Required permission:** `Brokers.View`
+
+<ParamField path="id" type="number" required>
+  The broker's database ID.
+</ParamField>
+
+**Response fields**
+
+<ResponseField name="id" type="number" required>
+  Unique broker ID.
+</ResponseField>
+
+<ResponseField name="name" type="string" required>
+  Legal business name of the broker or customer.
+</ResponseField>
+
+<ResponseField name="email" type="string">
+  Primary contact email address.
+</ResponseField>
+
+<ResponseField name="phone" type="string">
+  Primary contact phone number.
+</ResponseField>
+
+<ResponseField name="mcNumber" type="string">
+  Motor Carrier (MC) number issued by the FMCSA.
+</ResponseField>
+
+<ResponseField name="dotNumber" type="string">
+  Department of Transportation (DOT) number.
+</ResponseField>
+
+```bash cURL
+curl https://your-domain.com/api/brokers/42 \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### POST /api/brokers
+
+Create a new broker record.
+
+**Required permission:** `Brokers.Create`
+
+<ParamField body="name" type="string" required>
+  Legal business name of the broker.
+</ParamField>
+
+<ParamField body="email" type="string">
+  Primary contact email address.
+</ParamField>
+
+<ParamField body="phone" type="string">
+  Primary contact phone number.
+</ParamField>
+
+<ParamField body="mcNumber" type="string">
+  Motor Carrier number.
+</ParamField>
+
+<ParamField body="dotNumber" type="string">
+  DOT number.
+</ParamField>
+
+```bash cURL
+curl -X POST https://your-domain.com/api/brokers \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Atlas Freight Solutions",
+    "email": "dispatch@atlasfreight.com",
+    "phone": "555-0100",
+    "mcNumber": "MC-987654",
+    "dotNumber": "DOT-123456"
+  }'
+```
+
+---
+
+### PUT /api/brokers/\{id\}
+
+Update an existing broker's details.
+
+**Required permission:** `Brokers.Update`
+
+<ParamField path="id" type="number" required>
+  The broker's database ID.
+</ParamField>
+
+---
+
+### DELETE /api/brokers/\{id\}
+
+Delete a broker record. This is a soft delete — the broker remains in the database with `isDeleted: true`.
+
+**Required permission:** `Brokers.Delete`
+
+<ParamField path="id" type="number" required>
+  The broker's database ID.
+</ParamField>
+
+---
+
+### GET /api/brokers/\{id\}/loads
+
+List all loads associated with a specific broker.
+
+**Required permission:** `Loads.View`
+
+<ParamField path="id" type="number" required>
+  The broker's database ID.
+</ParamField>
+
+```bash cURL
+curl https://your-domain.com/api/brokers/42/loads \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+<Note>
+  Brokers are automatically created or updated when QuickManage syncs load data via the background import job. Manual creation is also supported for brokers not managed through QuickManage.
+</Note>
+
+---
+
+## AddressesController — `/api/addresses`
+
+Address management with automatic geocoding. When you create an address, the API resolves the street and city into latitude/longitude coordinates using the configured geocoding service.
+
+### GET /api/addresses
+
+List addresses for the current company.
+
+**Required permission:** `Addresses.View`
+
+---
+
+### POST /api/addresses
+
+Create a new address. The API automatically geocodes the address to populate `latitude` and `longitude`.
+
+**Required permission:** `Addresses.Create`
+
+<ParamField body="line1" type="string" required>
+  Street address line 1.
+</ParamField>
+
+<ParamField body="city" type="string" required>
+  City name.
+</ParamField>
+
+<ParamField body="state" type="string" required>
+  State or province abbreviation (e.g., `TX`, `CA`).
+</ParamField>
+
+<ParamField body="zip" type="string">
+  Postal or ZIP code.
+</ParamField>
+
+<ParamField body="country" type="string">
+  Two-letter ISO country code (e.g., `US`).
+</ParamField>
+
+**Response fields**
+
+<ResponseField name="id" type="number" required>
+  Address ID.
+</ResponseField>
+
+<ResponseField name="line1" type="string" required>
+  Street address line 1.
+</ResponseField>
+
+<ResponseField name="city" type="string" required>
+  City name.
+</ResponseField>
+
+<ResponseField name="state" type="string" required>
+  State abbreviation.
+</ResponseField>
+
+<ResponseField name="zip" type="string">
+  Postal code.
+</ResponseField>
+
+<ResponseField name="country" type="string">
+  Country code.
+</ResponseField>
+
+<ResponseField name="latitude" type="number">
+  Geocoded latitude coordinate.
+</ResponseField>
+
+<ResponseField name="longitude" type="number">
+  Geocoded longitude coordinate.
+</ResponseField>
+
+```bash cURL
+curl -X POST https://your-domain.com/api/addresses \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "line1": "1600 Amphitheatre Pkwy",
+    "city": "Mountain View",
+    "state": "CA",
+    "zip": "94043",
+    "country": "US"
+  }'
+```
+
+---
+
+### POST /api/addresses/geocode
+
+Resolve a free-form address string to latitude/longitude without saving a record. Useful for ETA calculations or map previews before committing a new address.
+
+**Required permission:** `Addresses.Create`
+
+<ParamField body="address" type="string" required>
+  Full address string to geocode (e.g., `"1600 Amphitheatre Pkwy, Mountain View, CA 94043"`).
+</ParamField>
+
+**Response fields**
+
+<ResponseField name="latitude" type="number" required>
+  Resolved latitude coordinate.
+</ResponseField>
+
+<ResponseField name="longitude" type="number" required>
+  Resolved longitude coordinate.
+</ResponseField>
+
+```bash cURL
+curl -X POST https://your-domain.com/api/addresses/geocode \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"address": "1600 Amphitheatre Pkwy, Mountain View, CA 94043"}'
+```
+
+```json Response
+{
+  "latitude": 37.422408,
+  "longitude": -122.084068
+}
+```
+
+---
+
+## CountryController — `/api/countries`
+
+Reference list of countries. No authentication required.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/countries` | List all countries |
+| GET | `/api/countries/{id}` | Get a country by ID |
+
+---
+
+## StatesController — `/api/states`
+
+Reference list of states and provinces. No authentication required.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/states` | List all states |
+| GET | `/api/states/{countryId}/states` | List states for a specific country |
+| GET | `/api/states/{id}` | Get a state by ID |
+
+---
+
+## RateSavingsController — `/api/rate-savings`
+
+Track and manage driver rate savings — the difference between the negotiated rate and the market rate for a given load.
+
+### GET /api/rate-savings
+
+List all rate savings records for the current company.
+
+**Required permission:** `RateSavings.View`
+
+---
+
+### GET /api/rate-savings/\{driverId\}
+
+Get all rate savings records for a specific driver.
+
+**Required permission:** `RateSavings.View`
+
+<ParamField path="driverId" type="number" required>
+  The driver's database ID.
+</ParamField>
+
+---
+
+### POST /api/rate-savings
+
+Record a new rate savings transaction.
+
+**Required permission:** `RateSavings.Create`
+
+```bash cURL
+curl -X POST https://your-domain.com/api/rate-savings \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "driverId": 7,
+    "loadId": 301,
+    "savedAmount": 250.00
+  }'
+```
+
+---
+
+### POST /api/rate-savings/\{id\}/adjust
+
+Apply a manual adjustment to an existing rate savings record. Use this to correct data entry errors or apply negotiated credits after the fact.
+
+**Required permission:** `RateSavings.Update`
+
+<ParamField path="id" type="number" required>
+  The rate savings record ID.
+</ParamField>
+
+<ParamField body="adjustmentAmount" type="number" required>
+  Positive or negative dollar amount to add to the record.
+</ParamField>
+
+<ParamField body="reason" type="string">
+  Human-readable reason for the adjustment, stored in the audit log.
+</ParamField>

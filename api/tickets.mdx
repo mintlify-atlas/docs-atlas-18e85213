@@ -1,0 +1,342 @@
+---
+title: "Tickets API: issue tracking and AI resolution hints"
+description: "Reference for UpdaterAgent tickets: create issues, assign users, change status, get AI resolution suggestions via AskAI, and manage paperwork issues."
+---
+
+The Tickets API provides a full issue-tracking workflow for your TMS operations — from driver incidents and paperwork disputes to load delays and billing questions. Each ticket can carry comments, be assigned to a user, progress through statuses, and optionally receive AI-generated resolution suggestions powered by the AskAI integration. Related controllers handle standalone comments, BOL/POD paperwork issues, and the email accounts that feed tickets automatically.
+
+## TicketsController — `/api/tickets`
+
+Core ticket management. All endpoints require JWT authentication.
+
+### GET /api/tickets
+
+List tickets for the current company. Supports filtering by status, assignee, and date range, plus standard pagination.
+
+**Required permission:** `Tickets.View`
+
+```bash cURL
+curl "https://your-domain.com/api/tickets?status=Open&page=1&pageSize=20" \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### GET /api/tickets/\{id\}
+
+Retrieve full ticket details including its comment thread and status history.
+
+**Required permission:** `Tickets.View`
+
+<ParamField path="id" type="number" required>
+  The ticket's database ID.
+</ParamField>
+
+**Response fields**
+
+<ResponseField name="id" type="number" required>
+  Ticket ID.
+</ResponseField>
+
+<ResponseField name="title" type="string" required>
+  Short summary of the issue.
+</ResponseField>
+
+<ResponseField name="description" type="string">
+  Full description of the issue.
+</ResponseField>
+
+<ResponseField name="status" type="string" required>
+  Current ticket status (e.g., `Open`, `InProgress`, `Resolved`, `Closed`).
+</ResponseField>
+
+<ResponseField name="assignedUserId" type="number">
+  ID of the user the ticket is assigned to, or `null` if unassigned.
+</ResponseField>
+
+<ResponseField name="comments" type="array">
+  List of comments attached to the ticket.
+</ResponseField>
+
+---
+
+### POST /api/tickets
+
+Create a new ticket.
+
+**Required permission:** `Tickets.Create`
+
+<ParamField body="title" type="string" required>
+  Short summary of the issue.
+</ParamField>
+
+<ParamField body="description" type="string">
+  Detailed description of the issue.
+</ParamField>
+
+<ParamField body="loadId" type="number">
+  Associate the ticket with a specific load, if applicable.
+</ParamField>
+
+```bash cURL
+curl -X POST https://your-domain.com/api/tickets \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Missing POD for load #1045",
+    "description": "Driver did not upload the proof of delivery document after completing the stop.",
+    "loadId": 1045
+  }'
+```
+
+---
+
+### PUT /api/tickets/\{id\}
+
+Update ticket fields such as title and description.
+
+**Required permission:** `Tickets.Update`
+
+<ParamField path="id" type="number" required>
+  The ticket's database ID.
+</ParamField>
+
+---
+
+### DELETE /api/tickets/\{id\}
+
+Delete a ticket. This is a soft delete.
+
+**Required permission:** `Tickets.Delete`
+
+<ParamField path="id" type="number" required>
+  The ticket's database ID.
+</ParamField>
+
+---
+
+### POST /api/tickets/\{id\}/comments
+
+Add a comment to a ticket. Use this for notes, updates, or inter-team communication related to the issue.
+
+**Required permission:** `Tickets.Update`
+
+<ParamField path="id" type="number" required>
+  The ticket's database ID.
+</ParamField>
+
+<ParamField body="content" type="string" required>
+  The comment text. Markdown is supported.
+</ParamField>
+
+```bash cURL
+curl -X POST https://your-domain.com/api/tickets/88/comments \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"content": "Contacted driver — POD will be uploaded by end of day."}'
+```
+
+---
+
+### PUT /api/tickets/\{id\}/assign
+
+Assign a ticket to a specific user.
+
+**Required permission:** `Tickets.Update`
+
+<ParamField path="id" type="number" required>
+  The ticket's database ID.
+</ParamField>
+
+<ParamField body="userId" type="number" required>
+  ID of the user to assign the ticket to.
+</ParamField>
+
+---
+
+### PUT /api/tickets/\{id\}/status
+
+Change the status of a ticket.
+
+**Required permission:** `Tickets.Update`
+
+<ParamField path="id" type="number" required>
+  The ticket's database ID.
+</ParamField>
+
+<ParamField body="status" type="string" required>
+  New status value. Valid values depend on your configuration (e.g., `Open`, `InProgress`, `Resolved`, `Closed`).
+</ParamField>
+
+---
+
+### POST /api/tickets/\{id\}/ai-suggestions
+
+Request AI-generated resolution suggestions for a ticket. The endpoint sends the ticket's title and description to AskAI and returns a list of recommended actions or similar resolved tickets.
+
+**Required permission:** `Tickets.View`
+
+<ParamField path="id" type="number" required>
+  The ticket's database ID.
+</ParamField>
+
+**Response fields**
+
+<ResponseField name="suggestions" type="array" required>
+  List of AI-generated suggestion objects.
+</ResponseField>
+
+<ResponseField name="suggestions[].text" type="string" required>
+  Suggested resolution step or action.
+</ResponseField>
+
+<ResponseField name="suggestions[].confidence" type="number">
+  Confidence score between 0 and 1.
+</ResponseField>
+
+```bash cURL
+curl -X POST https://your-domain.com/api/tickets/88/ai-suggestions \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+```json Response
+{
+  "suggestions": [
+    {
+      "text": "Request the driver to upload the POD via the mobile app under the load's Files tab.",
+      "confidence": 0.92
+    },
+    {
+      "text": "Contact the broker directly at dispatch@atlasfreight.com to obtain a copy of the signed delivery receipt.",
+      "confidence": 0.78
+    }
+  ]
+}
+```
+
+<Note>
+  AI suggestions require the AskAI integration to be configured in your ELD/TMS settings. If AskAI is not configured, this endpoint returns an empty `suggestions` array.
+</Note>
+
+---
+
+## CommentsController — `/api/comments`
+
+Standalone comment management. Comments can be attached to tickets and other entities.
+
+| Method | Endpoint | Permission | Description |
+|--------|----------|------------|-------------|
+| GET | `/api/comments` | `Comments.View` | List comments |
+| GET | `/api/comments/{id}` | `Comments.View` | Get a comment by ID |
+| POST | `/api/comments` | `Comments.Create` | Create a new comment |
+| PUT | `/api/comments/{id}` | `Comments.Update` | Update a comment |
+| DELETE | `/api/comments/{id}` | `Comments.Delete` | Delete a comment |
+
+---
+
+## PaperWorkIssuesController — `/api/paperwork-issues`
+
+Track and resolve BOL (Bill of Lading) and POD (Proof of Delivery) document issues associated with loads.
+
+### GET /api/paperwork-issues
+
+List all paperwork issues for the current company.
+
+**Required permission:** `PaperworkIssues.View`
+
+---
+
+### GET /api/paperwork-issues/\{id\}
+
+Get details of a specific paperwork issue.
+
+**Required permission:** `PaperworkIssues.View`
+
+<ParamField path="id" type="number" required>
+  The paperwork issue ID.
+</ParamField>
+
+---
+
+### POST /api/paperwork-issues
+
+Create a new paperwork issue.
+
+**Required permission:** `PaperworkIssues.Create`
+
+<ParamField body="loadId" type="number" required>
+  The load the issue is associated with.
+</ParamField>
+
+<ParamField body="issueType" type="string" required>
+  Type of document issue (e.g., `MissingBOL`, `MissingPOD`, `IncorrectSignature`).
+</ParamField>
+
+<ParamField body="notes" type="string">
+  Additional context about the issue.
+</ParamField>
+
+---
+
+### PUT /api/paperwork-issues/\{id\}
+
+Update a paperwork issue's details.
+
+**Required permission:** `PaperworkIssues.Update`
+
+<ParamField path="id" type="number" required>
+  The paperwork issue ID.
+</ParamField>
+
+---
+
+### PUT /api/paperwork-issues/\{id\}/resolve
+
+Mark a paperwork issue as resolved. Sets the `resolvedAt` timestamp and records the resolving user.
+
+**Required permission:** `PaperworkIssues.Update`
+
+<ParamField path="id" type="number" required>
+  The paperwork issue ID.
+</ParamField>
+
+<ParamField body="resolutionNote" type="string">
+  Optional note describing how the issue was resolved.
+</ParamField>
+
+```bash cURL
+curl -X PUT https://your-domain.com/api/paperwork-issues/15/resolve \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"resolutionNote": "Driver uploaded signed POD via mobile app."}'
+```
+
+---
+
+## Email management
+
+UpdaterAgent monitors connected email accounts (via Nylas OAuth) and automatically classifies inbound messages — for example, routing rate confirmation emails into the load pipeline.
+
+### EmailAddressesController — `/api/email-addresses`
+
+Manage the email accounts connected for monitoring.
+
+| Method | Endpoint | Permission | Description |
+|--------|----------|------------|-------------|
+| GET | `/api/email-addresses` | `EmailAddresses.View` | List connected email addresses |
+| GET | `/api/email-addresses/{id}` | `EmailAddresses.View` | Get an email address by ID |
+| POST | `/api/email-addresses` | `EmailAddresses.Create` | Add an email address |
+| PUT | `/api/email-addresses/{id}` | `EmailAddresses.Update` | Update an email address |
+| DELETE | `/api/email-addresses/{id}` | `EmailAddresses.Delete` | Remove an email address |
+| POST | `/api/email-addresses/{id}/connect` | `EmailAddresses.Update` | Connect email via OAuth (Nylas) |
+
+### EmailMessagesController — `/api/email-messages`
+
+View and reprocess email messages that have been ingested from connected accounts.
+
+| Method | Endpoint | Permission | Description |
+|--------|----------|------------|-------------|
+| GET | `/api/email-messages` | `EmailMessages.View` | List all ingested email messages |
+| GET | `/api/email-messages/{id}` | `EmailMessages.View` | Get a specific email message |
+| POST | `/api/email-messages/{id}/process` | `EmailMessages.Update` | Manually trigger processing of an email |
+| POST | `/api/email-messages/{id}/classify` | `EmailMessages.Update` | Re-classify an email's category |

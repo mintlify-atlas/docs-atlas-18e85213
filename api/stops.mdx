@@ -1,0 +1,307 @@
+---
+title: "Stops API: manage pickup and delivery stops"
+description: "REST API reference for load stops in UpdaterAgent TMS. Create, update, and advance pickup and delivery stops through check-in, check-out, and completion."
+---
+
+The Stops API manages the individual pickup and delivery locations that make up a load's route. Each stop is linked to a load, assigned to a truck and driver, and carries an appointment date that determines its position in the route. As drivers progress through the route, stops advance through check-in, check-out, and completion states. On check-in, the system automatically sets the next uncompleted stop as the current heading.
+
+**Base URL:** `/api/stops`
+
+**Required permission (minimum):** `Stops.View`
+
+---
+
+## Endpoints
+
+### GET /api/stops
+
+List stops with optional filters. Requires `Stops.View`.
+
+**Query parameters**
+
+<ParamField query="loadId" type="number">
+  Filter stops by load ID.
+</ParamField>
+
+<ParamField query="status" type="string">
+  Filter by completion state: `completed` or `pending`.
+</ParamField>
+
+<ParamField query="isPickup" type="boolean">
+  Filter to pickup stops (`true`) or delivery stops (`false`).
+</ParamField>
+
+<ParamField query="page" type="number">
+  Page number, 1-indexed. Defaults to `1`.
+</ParamField>
+
+<ParamField query="pageSize" type="number">
+  Items per page. Defaults to `20`, maximum `100`.
+</ParamField>
+
+```bash cURL
+curl "https://your-domain.com/api/stops?loadId=101&isPickup=true" \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### GET /api/stops/{id}
+
+Get details for a single stop. Requires `Stops.View`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The stop ID.
+</ParamField>
+
+```bash cURL
+curl https://your-domain.com/api/stops/456 \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+```json Response
+{
+  "id": 456,
+  "loadId": 101,
+  "isPickup": true,
+  "isCompleted": false,
+  "isCurrent": true,
+  "appointmentDate": "2025-06-10T08:00:00Z",
+  "order": 1,
+  "addressId": 78,
+  "assignedTruckId": 9,
+  "assignedDriverIds": ["42"],
+  "checkIn": null,
+  "checkOut": null
+}
+```
+
+<Note>
+  The `isCurrent` field in the response maps from the internal `IsCurrentHeading` flag on the `Stop` entity. It is `true` when this stop is the one the truck is actively heading toward.
+</Note>
+
+---
+
+### POST /api/stops
+
+Create a new stop and attach it to a load. Requires `Stops.Create`.
+
+**Request body**
+
+<ParamField body="loadId" type="number" required>
+  The load this stop belongs to.
+</ParamField>
+
+<ParamField body="isPickup" type="boolean" required>
+  `true` for a pickup stop, `false` for a delivery stop.
+</ParamField>
+
+<ParamField body="appointmentDate" type="string" required>
+  ISO 8601 scheduled appointment date and time. Stops are ordered by this field when determining route sequence.
+</ParamField>
+
+<ParamField body="addressId" type="number" required>
+  ID of the address record for this stop location.
+</ParamField>
+
+<ParamField body="order" type="number">
+  Explicit display order override. When omitted, order is derived from `appointmentDate`.
+</ParamField>
+
+<ParamField body="assignedTruckId" type="number">
+  The truck ID assigned to service this stop.
+</ParamField>
+
+<ParamField body="assignedDriverIds" type="array">
+  Array of driver IDs (`Driver.Id` as strings) assigned to this stop. Do not use `ImportId`.
+</ParamField>
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://your-domain.com/api/stops \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "loadId": 101,
+    "isPickup": true,
+    "appointmentDate": "2025-06-10T08:00:00Z",
+    "addressId": 78,
+    "assignedTruckId": 9,
+    "assignedDriverIds": ["42"]
+  }'
+```
+
+```json Response
+{
+  "id": 456,
+  "loadId": 101,
+  "isPickup": true,
+  "isCompleted": false,
+  "isCurrent": false,
+  "appointmentDate": "2025-06-10T08:00:00Z",
+  "order": 1,
+  "addressId": 78,
+  "assignedTruckId": 9,
+  "assignedDriverIds": ["42"]
+}
+```
+
+</CodeGroup>
+
+<Warning>
+  `assignedDriverIds` stores `Driver.Id` values (the local database primary key), not the external `ImportId` used for QuickManage sync. Passing `ImportId` will result in unmatched driver references.
+</Warning>
+
+---
+
+### PUT /api/stops/{id}
+
+Update a stop's properties. Requires `Stops.Update`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The stop ID to update.
+</ParamField>
+
+**Request body**
+
+The body accepts the same fields as `POST /api/stops`. Include only the fields you want to change.
+
+```bash cURL
+curl -X PUT https://your-domain.com/api/stops/456 \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"appointmentDate": "2025-06-10T09:30:00Z"}'
+```
+
+---
+
+### DELETE /api/stops/{id}
+
+Delete a stop from a load. Requires `Stops.Delete`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The stop ID to delete.
+</ParamField>
+
+```bash cURL
+curl -X DELETE https://your-domain.com/api/stops/456 \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### PUT /api/stops/{id}/checkin
+
+Mark a stop as checked in — the driver has arrived. Requires `Stops.Update`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The stop ID.
+</ParamField>
+
+<CodeGroup>
+
+```bash cURL
+curl -X PUT https://your-domain.com/api/stops/456/checkin \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+```json Response
+{
+  "id": 456,
+  "checkIn": "2025-06-10T08:12:00Z",
+  "isCurrent": false
+}
+```
+
+</CodeGroup>
+
+<Note>
+  **Auto-advance on check-in:** When a stop is checked in, the system automatically updates the current heading:
+
+  1. Clears `IsCurrentHeading = false` on the checked-in stop.
+  2. Finds the next uncompleted stop on the same load and truck, ordered by `AppointmentDate`.
+  3. Sets `IsCurrentHeading = true` on that stop.
+  4. If no next stop exists (last stop on the load), the heading is left unset.
+
+  The response will reflect `isCurrent: false` on the checked-in stop after this auto-advance.
+</Note>
+
+---
+
+### PUT /api/stops/{id}/checkout
+
+Mark a stop as checked out — the driver has departed. Requires `Stops.Update`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The stop ID.
+</ParamField>
+
+```bash cURL
+curl -X PUT https://your-domain.com/api/stops/456/checkout \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+```json Response
+{
+  "id": 456,
+  "checkIn": "2025-06-10T08:12:00Z",
+  "checkOut": "2025-06-10T08:47:00Z"
+}
+```
+
+---
+
+### PUT /api/stops/{id}/complete
+
+Mark a stop as fully completed. Requires `Stops.Update`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The stop ID.
+</ParamField>
+
+```bash cURL
+curl -X PUT https://your-domain.com/api/stops/456/complete \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+## Stop fields reference
+
+| Field | Type | Description |
+|---|---|---|
+| `loadId` | number | Load this stop belongs to |
+| `isPickup` | boolean | `true` = pickup stop, `false` = delivery stop |
+| `isCompleted` | boolean | Whether the stop has been fully completed |
+| `isCurrent` | boolean | Whether the truck is currently heading to this stop (maps from `IsCurrentHeading`) |
+| `appointmentDate` | string | Scheduled appointment — determines route order |
+| `order` | number | Display order, derived from `appointmentDate` if not set explicitly |
+| `addressId` | number | Linked address with geocoded coordinates |
+| `assignedTruckId` | number | Truck responsible for this stop |
+| `assignedDriverIds` | string[] | Driver IDs (`Driver.Id`, not `ImportId`) assigned to this stop |
+| `checkIn` | string \| null | ISO 8601 timestamp when the driver checked in |
+| `checkOut` | string \| null | ISO 8601 timestamp when the driver checked out |
+
+---
+
+## Permissions summary
+
+| Permission | Grants access to |
+|---|---|
+| `Stops.View` | GET endpoints |
+| `Stops.Create` | `POST /api/stops` |
+| `Stops.Update` | PUT, check-in, check-out, complete |
+| `Stops.Delete` | `DELETE /api/stops/{id}` |

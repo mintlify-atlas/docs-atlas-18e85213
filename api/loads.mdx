@@ -1,0 +1,540 @@
+---
+title: "Loads API: create, update, and track freight"
+description: "REST API reference for freight loads in UpdaterAgent TMS. Endpoints to create, dispatch, start transit, complete, attach BOL/POD files, and retrieve ETA."
+---
+
+The Loads API is the core of UpdaterAgent TMS. It exposes endpoints to create and update freight loads, drive them through the `Upcoming → Dispatched → InTransit → Delivered` lifecycle, assign drivers, manage document attachments (BOL, POD), and retrieve real-time ETA to the next stop. All endpoints require a valid JWT and the appropriate permission.
+
+**Base URL:** `/api/loads`
+
+**Required permission (minimum):** `Loads.View`
+
+---
+
+## Load status lifecycle
+
+Every load starts as `Upcoming` and advances forward — status transitions are one-directional.
+
+```text
+Upcoming → Dispatched → InTransit → Delivered
+                                   ↘ Cancelled
+```
+
+Use `PUT /api/loads/{id}/start` to move from `Dispatched` → `InTransit`, and `PUT /api/loads/{id}/complete` to move from `InTransit` → `Delivered`.
+
+---
+
+## Endpoints
+
+### GET /api/loads
+
+List loads with optional filters and pagination. Requires `Loads.View`.
+
+**Query parameters**
+
+<ParamField query="page" type="number">
+  Page number, 1-indexed. Defaults to `1`.
+</ParamField>
+
+<ParamField query="pageSize" type="number">
+  Items per page. Defaults to `20`, maximum `100`.
+</ParamField>
+
+<ParamField query="sortBy" type="string">
+  Field name to sort results by (e.g., `createdAt`, `status`).
+</ParamField>
+
+<ParamField query="sortDirection" type="string">
+  Sort order: `asc` or `desc`.
+</ParamField>
+
+<ParamField query="status" type="string">
+  Filter by load status: `Upcoming`, `Dispatched`, `InTransit`, `Delivered`, or `Cancelled`.
+</ParamField>
+
+<ParamField query="companyId" type="number">
+  Filter loads belonging to a specific company.
+</ParamField>
+
+<ParamField query="fromDate" type="string">
+  ISO 8601 date — return loads created on or after this date.
+</ParamField>
+
+<ParamField query="toDate" type="string">
+  ISO 8601 date — return loads created on or before this date.
+</ParamField>
+
+<ParamField query="search" type="string">
+  Text search across trip number, commodity, and related fields.
+</ParamField>
+
+**Response**
+
+<ResponseField name="items" type="array" required>
+  Array of load summary objects for the current page.
+</ResponseField>
+
+<ResponseField name="totalCount" type="number" required>
+  Total number of loads matching the filters.
+</ResponseField>
+
+<ResponseField name="page" type="number" required>
+  Current page number.
+</ResponseField>
+
+<ResponseField name="pageSize" type="number" required>
+  Number of items per page.
+</ResponseField>
+
+<ResponseField name="totalPages" type="number" required>
+  Total number of pages.
+</ResponseField>
+
+<CodeGroup>
+
+```bash cURL
+curl "https://your-domain.com/api/loads?status=InTransit&page=1&pageSize=20" \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+```json Response
+{
+  "items": [
+    {
+      "id": 101,
+      "tripNumber": "TRP-5042",
+      "status": "InTransit",
+      "commodity": "Electronics",
+      "weight": 12500,
+      "companyId": 3
+    }
+  ],
+  "totalCount": 47,
+  "page": 1,
+  "pageSize": 20,
+  "totalPages": 3
+}
+```
+
+</CodeGroup>
+
+---
+
+### GET /api/loads/{id}
+
+Get detailed load information including all associated stops. Requires `Loads.View`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The load ID.
+</ParamField>
+
+```bash cURL
+curl https://your-domain.com/api/loads/101 \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### POST /api/loads
+
+Create a new load. Requires `Loads.Create`.
+
+**Request body**
+
+<ParamField body="tripNumber" type="string" required>
+  Unique trip identifier. Used for deduplication on QuickManage import.
+</ParamField>
+
+<ParamField body="companyId" type="number" required>
+  The owning company ID (tenant-scoped).
+</ParamField>
+
+<ParamField body="customerId" type="number">
+  Associated broker or customer record ID.
+</ParamField>
+
+<ParamField body="commodity" type="string">
+  Description of the freight being transported.
+</ParamField>
+
+<ParamField body="weight" type="number">
+  Freight weight.
+</ParamField>
+
+<ParamField body="type" type="string">
+  Load type (e.g., `DryVan`, `Flatbed`, `Reefer`).
+</ParamField>
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://your-domain.com/api/loads \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tripNumber": "TRP-5099",
+    "companyId": 3,
+    "customerId": 12,
+    "commodity": "Auto Parts",
+    "weight": 18000,
+    "type": "DryVan"
+  }'
+```
+
+```json Response
+{
+  "id": 210,
+  "tripNumber": "TRP-5099",
+  "status": "Upcoming",
+  "companyId": 3,
+  "customerId": 12,
+  "commodity": "Auto Parts",
+  "weight": 18000,
+  "type": "DryVan"
+}
+```
+
+</CodeGroup>
+
+---
+
+### PUT /api/loads/{id}
+
+Update an existing load's details. Requires `Loads.Update`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The load ID to update.
+</ParamField>
+
+**Request body**
+
+The body accepts the same fields as `POST /api/loads`. Include only the fields you want to change.
+
+```bash cURL
+curl -X PUT https://your-domain.com/api/loads/210 \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"commodity": "Auto Parts — Revised", "weight": 19500}'
+```
+
+---
+
+### DELETE /api/loads/{id}
+
+Delete a load record. Requires `Loads.Delete`.
+
+<Warning>
+  Deletion is soft-delete only — the record is marked as deleted and excluded from all future queries, but it is not purged from the database.
+</Warning>
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The load ID to delete.
+</ParamField>
+
+```bash cURL
+curl -X DELETE https://your-domain.com/api/loads/210 \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### GET /api/loads/statistics
+
+Return a count of loads grouped by status. Useful for dashboard tiles and pipeline summaries. Requires `Loads.View`.
+
+```bash cURL
+curl https://your-domain.com/api/loads/statistics \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+```json Response
+{
+  "upcoming": 14,
+  "dispatched": 7,
+  "inTransit": 23,
+  "delivered": 512,
+  "cancelled": 6
+}
+```
+
+---
+
+### POST /api/loads/{id}/assign-driver
+
+Assign a driver to a load. Requires `Loads.Update`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The load ID.
+</ParamField>
+
+**Request body**
+
+<ParamField body="driverId" type="number" required>
+  The driver's local database ID (`Driver.Id`). Do not use `ImportId`.
+</ParamField>
+
+<Note>
+  `driverId` must be the local `Driver.Id` (long), not the external `ImportId` used for QuickManage synchronization. See the [Drivers API](/api/drivers) for details on this distinction.
+</Note>
+
+```bash cURL
+curl -X POST https://your-domain.com/api/loads/101/assign-driver \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"driverId": 42}'
+```
+
+---
+
+### PUT /api/loads/{id}/start
+
+Set load status to `InTransit`. Use this when the driver begins transit. Requires `Loads.Update`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The load ID.
+</ParamField>
+
+```bash cURL
+curl -X PUT https://your-domain.com/api/loads/101/start \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### PUT /api/loads/{id}/complete
+
+Set load status to `Delivered`. Use this when all stops are finished. Requires `Loads.Update`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The load ID.
+</ParamField>
+
+```bash cURL
+curl -X PUT https://your-domain.com/api/loads/101/complete \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### POST /api/loads/{id}/files
+
+Upload a document (BOL, POD, or similar) to a load. Requires `Loads.Update`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The load ID.
+</ParamField>
+
+**Request body** — `multipart/form-data`
+
+<ParamField body="file" type="file" required>
+  The file to upload. Supported types: PDF (`application/pdf`), JPEG (`image/jpeg`), PNG (`image/png`). Maximum size: 10 MB.
+</ParamField>
+
+<ParamField body="fileType" type="string" required>
+  Document category: `BOL` (Bill of Lading), `POD` (Proof of Delivery), or `RateCon` (Rate Confirmation).
+</ParamField>
+
+```bash cURL
+curl -X POST https://your-domain.com/api/loads/101/files \
+  -H "Authorization: Bearer <accessToken>" \
+  -F "file=@/path/to/bol.pdf;type=application/pdf" \
+  -F "fileType=BOL"
+```
+
+---
+
+### GET /api/loads/{id}/files
+
+List all file attachments for a load. Requires `Loads.View`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The load ID.
+</ParamField>
+
+```bash cURL
+curl https://your-domain.com/api/loads/101/files \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+```json Response
+[
+  {
+    "id": 7,
+    "loadId": 101,
+    "fileType": "BOL",
+    "fileName": "bol.pdf",
+    "uploadedAt": "2025-06-10T09:14:00Z"
+  }
+]
+```
+
+---
+
+### DELETE /api/loads/{id}/files/{fileId}
+
+Delete a specific file attachment from a load. Requires `Loads.Delete`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The load ID.
+</ParamField>
+
+<ParamField path="fileId" type="number" required>
+  The file attachment ID to delete.
+</ParamField>
+
+```bash cURL
+curl -X DELETE https://your-domain.com/api/loads/101/files/7 \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### GET /api/loads/{id}/eta
+
+Get the current ETA to the next (or current heading) stop. Requires `Loads.View`. ETA is calculated using OSRM as the primary routing engine, with Google Maps as a fallback.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The load ID.
+</ParamField>
+
+```bash cURL
+curl https://your-domain.com/api/loads/101/eta \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+```json Response
+{
+  "loadId": 101,
+  "nextStopId": 456,
+  "eta": "2025-06-10T17:45:00Z",
+  "remainingMinutes": 93,
+  "destinationAddress": "1400 Industrial Blvd, Dallas, TX 75207"
+}
+```
+
+---
+
+### PATCH /api/update-board/{truckId}/heading
+
+Set the stop that a truck is currently heading toward. This endpoint lives under `UpdateBoardController` but directly affects load stop state. Requires `Loads.Update`.
+
+**Path parameters**
+
+<ParamField path="truckId" type="number" required>
+  The truck ID.
+</ParamField>
+
+**Request body**
+
+<ParamField body="loadId" type="number" required>
+  The load ID the stop belongs to. The load must be active (`Upcoming`, `Dispatched`, or `InTransit`).
+</ParamField>
+
+<ParamField body="stopId" type="number" required>
+  The stop ID to set as the current heading. The stop must belong to the load, be assigned to the given truck, and not yet be completed.
+</ParamField>
+
+<CodeGroup>
+
+```bash cURL
+curl -X PATCH https://your-domain.com/api/update-board/9/heading \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"loadId": 101, "stopId": 456}'
+```
+
+```json Response
+{
+  "truckId": 9,
+  "loadId": 101,
+  "currentHeadingStopId": 456
+}
+```
+
+</CodeGroup>
+
+<Info>
+  If no stop has `IsCurrentHeading = true`, the system falls back to the first uncompleted stop ordered by `AppointmentDate`. The heading flag is also auto-advanced on check-in — see the [Stops API](/api/stops) for details.
+</Info>
+
+---
+
+## Pagination
+
+All list endpoints use consistent pagination query parameters and response structure.
+
+```bash
+GET /api/loads?page=2&pageSize=50&sortBy=createdAt&sortDirection=desc
+```
+
+```json
+{
+  "items": [...],
+  "totalCount": 150,
+  "page": 2,
+  "pageSize": 50,
+  "totalPages": 3
+}
+```
+
+---
+
+## Error responses
+
+<AccordionGroup>
+  <Accordion title="404 Not Found — load does not exist">
+
+```json
+{
+  "error": {
+    "code": "Load.NotFound",
+    "message": "Load with ID 123 was not found"
+  }
+}
+```
+
+  </Accordion>
+  <Accordion title="409 Conflict — duplicate trip number">
+
+```json
+{
+  "error": {
+    "code": "Load.DuplicateTripNumber",
+    "message": "Load with TripNumber 12345 already exists"
+  }
+}
+```
+
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Permissions summary
+
+| Permission | Grants access to |
+|---|---|
+| `Loads.View` | GET endpoints, statistics, ETA, file listing |
+| `Loads.Create` | `POST /api/loads` |
+| `Loads.Update` | PUT, PATCH, assign-driver, start, complete, file upload |
+| `Loads.Delete` | DELETE load, DELETE file |

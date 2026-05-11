@@ -1,0 +1,186 @@
+---
+title: "Testing strategy and patterns in UpdaterAgent"
+description: "Unit and integration testing in UpdaterAgent: xUnit fixtures, Moq, FluentAssertions, WebApplicationFactory, builder patterns, and naming conventions."
+---
+
+UpdaterAgent maintains two test projects that together cover service logic in isolation and the full HTTP pipeline end-to-end. All tests follow shared naming, fixture, and assertion conventions so that any developer can read an unfamiliar test and immediately understand its intent.
+
+## Test projects
+
+<CardGroup cols={2}>
+  <Card title="UpdaterAgent.Application.ServicesTests" icon="flask-conical">
+    Unit tests for application services. Uses xUnit, Moq, and FluentAssertions. Each test class has a dedicated fixture and mocks all external dependencies.
+  </Card>
+  <Card title="UpdaterAgent.Integration.Tests" icon="network">
+    Integration tests that spin up the full application using `WebApplicationFactory<Program>`. Tests run against a real database with test fixtures applied.
+  </Card>
+</CardGroup>
+
+## Naming convention
+
+Every test method follows the `MethodName_Scenario_ExpectedResult` pattern. This makes it immediately clear what is being tested, under what conditions, and what outcome is expected — without reading the test body.
+
+```
+CreateAsync_WithValidRequest_ShouldCreateUserSuccessfully
+SetCurrentHeadingAsync_WithCompletedStop_ShouldReturnStopAlreadyCompletedError
+GetBoardAsync_WhenLoadNotFound_ShouldReturnFailure
+```
+
+## Test class structure
+
+Each test class is structured with a fixture for setup and `#region` blocks to separate success and failure cases.
+
+```csharp
+public class UpdateBoardServiceHeadingTests : IClassFixture<UpdateBoardServiceFixture>
+{
+    private readonly UpdateBoardServiceFixture _fixture;
+
+    public UpdateBoardServiceHeadingTests(UpdateBoardServiceFixture fixture)
+    {
+        _fixture = fixture;
+    }
+
+    #region Success Cases
+
+    [Fact]
+    public async Task SetCurrentHeadingAsync_WithValidRequest_ShouldSetHeadingSuccessfully()
+    {
+        // Arrange
+        var request = new SetCurrentHeadingRequestBuilder()
+            .WithLoadId(1)
+            .WithStopId(2)
+            .Build();
+
+        _fixture.MockStopRepository
+            .Setup(r => r.GetByIdAsync(request.StopId))
+            .ReturnsAsync(StopBuilder.Active().WithTruckId(1).Build());
+
+        // Act
+        var result = await _fixture.Service.SetCurrentHeadingAsync(1, request);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    #endregion
+
+    #region Failure Cases
+
+    [Fact]
+    public async Task SetCurrentHeadingAsync_WithCompletedStop_ShouldReturnError()
+    {
+        // Arrange
+        var request = new SetCurrentHeadingRequestBuilder()
+            .WithLoadId(1)
+            .WithStopId(3)
+            .Build();
+
+        _fixture.MockStopRepository
+            .Setup(r => r.GetByIdAsync(request.StopId))
+            .ReturnsAsync(StopBuilder.Completed().Build());
+
+        // Act
+        var result = await _fixture.Service.SetCurrentHeadingAsync(1, request);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().Be(UpdateBoardErrors.StopAlreadyCompleted);
+    }
+
+    #endregion
+}
+```
+
+## Fixture pattern
+
+Each test class uses a dedicated `[Feature]ServiceFixture` that sets up mocks and the service under test. The fixture is shared across all tests in the class via `IClassFixture<T>`.
+
+```csharp
+public class UpdateBoardServiceFixture
+{
+    public Mock<IStopRepository> MockStopRepository { get; } = new();
+    public Mock<ILoadRepository> MockLoadRepository { get; } = new();
+    public Mock<ITenantContextService> MockTenantContext { get; } = new();
+
+    public IUpdateBoardService Service { get; }
+
+    public UpdateBoardServiceFixture()
+    {
+        Service = new UpdateBoardService(
+            MockStopRepository.Object,
+            MockLoadRepository.Object,
+            MockTenantContext.Object);
+    }
+}
+```
+
+## Builder pattern
+
+Request objects are constructed with fluent builders to make test setup readable and resistant to constructor changes.
+
+```csharp
+var request = new UserRequestBuilder()
+    .WithEmail("driver@example.com")
+    .WithTenantId(1)
+    .WithRole(ERole.Driver)
+    .Build();
+
+var tenant = new TenantRequestBuilder()
+    .WithName("Acme Freight")
+    .WithIsActive(true)
+    .Build();
+```
+
+## Assertions
+
+Use FluentAssertions (`.Should()`) for all assertions. Moq is used for mocking and verifying interactions. Avoid `Assert.Equal` in favor of the more readable FluentAssertions syntax.
+
+```csharp
+// Value assertions
+result.IsSuccess.Should().BeTrue();
+result.Data.Should().NotBeNull();
+result.Data!.Name.Should().Be("John Doe");
+
+// Error assertions
+result.IsSuccess.Should().BeFalse();
+result.Error.Should().Be(UserErrors.NotFound);
+
+// Mock verification
+_fixture.MockStopRepository.Verify(
+    r => r.UpdateAsync(It.IsAny<Stop>()),
+    Times.Once);
+```
+
+## Running tests
+
+<CodeGroup>
+
+```bash Unit tests
+dotnet test tests/UpdaterAgent.Application.ServicesTests
+```
+
+```bash Integration tests
+dotnet test tests/UpdaterAgent.Integration.Tests
+```
+
+```bash Single test or class
+dotnet test tests/UpdaterAgent.Application.ServicesTests --filter "ClassName.MethodName"
+```
+
+</CodeGroup>
+
+<Note>
+Hangfire is disabled in the `Testing` environment. Jobs that depend on Hangfire scheduling are not executed during test runs. Test job logic directly by calling the job's `ExecuteAsync` method in unit tests.
+</Note>
+
+## Grouping summary
+
+| Convention | Rule |
+|---|---|
+| Success paths | `#region Success Cases` |
+| Failure paths | `#region Failure Cases` |
+| Setup | `[Feature]ServiceFixture` via `IClassFixture<T>` |
+| Request construction | Fluent builder (e.g., `UserRequestBuilder`) |
+| Assertions | FluentAssertions `.Should()` |
+| Mocking | Moq |
+| Test naming | `MethodName_Scenario_ExpectedResult` |

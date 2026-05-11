@@ -1,0 +1,198 @@
+---
+title: "Complete background job reference for UpdaterAgent"
+description: "All 11 Hangfire recurring jobs with job IDs, CRON expressions, frequencies, implementations, and troubleshooting guidance for UpdaterAgent TMS."
+---
+
+This page documents every recurring background job registered in UpdaterAgent. All jobs are registered in `src/UpdaterAgent.Application/BackgroundJobs/JobsRegistrar.cs` and only execute outside the Testing environment. Each job carries `[DisableConcurrentExecution(timeoutInSeconds: 300)]` and `[AutomaticRetry(Attempts = 0)]` to prevent overlapping runs and cascading retry failures.
+
+## All jobs
+
+| Job ID | CRON | Frequency | Purpose |
+|---|---|---|---|
+| `tms-import:load` | `0 */3 * * *` | Every 3 hours | Import loads from TMS |
+| `tms-import:brokers` | `0 */3 * * *` | Every 3 hours | Import brokers from TMS |
+| `tms-import:drivers` | `0 */3 * * *` | Every 3 hours | Import drivers from TMS |
+| `tms-import:trucks` | `0 */3 * * *` | Every 3 hours | Import trucks from TMS |
+| `tms-import:trailers` | `0 */3 * * *` | Every 3 hours | Import trailers from TMS |
+| `eld-import:positions` | `*/25 * * * *` | Every 25 minutes | Import ELD positions from Zippy GPS |
+| `eld-clear:positions` | `0 0 * * *` | Daily at midnight | Clear positions older than 72 hours |
+| `check:stationary-driver` | `0 */3 * * *` | Every 3 hours | Monitor stationary drivers on active loads |
+| `send:load-info` | `0 */1 * * *` | Every 1 hour | Send Telegram load info messages to drivers |
+| `check:sleep-timer-expiry` | `*/1 * * * *` | Every 1 minute | Check expired driver sleep timers |
+| `qm-webhook:renew-subscriptions` | `0 0 */2 * *` | Every 2 days | Renew QM webhook subscriptions |
+
+## Job categories
+
+<AccordionGroup>
+  <Accordion title="TMS import jobs — loads, drivers, trucks, trailers, brokers">
+    **Implementation:** `src/UpdaterAgent.Application/BackgroundJobs/LogisticsCore/LogisticsCoreImportJob.cs`
+
+    **DI registration:** `ILogisticsCoreImportJob` → `LogisticsCoreImportJob`
+
+    These five jobs sync master data from the TMS/LogisticsCore system. They run on the same `0 */3 * * *` schedule (every 3 hours) and each iterates all companies.
+
+    **`tms-import:load`** — calls `ExecuteImportLoadAsync()` in `LoadJob.cs`. Fetches loads from the TMS API, creates or updates local records, and maps drivers and stops.
+
+    **`tms-import:brokers`** — calls `ExecuteImportBrokersAsync()`. Fetches brokers, creates or updates broker records and contact information.
+
+    **`tms-import:drivers`** — calls `ExecuteImportDriversAsync()`. Updates driver name, contact, and `Driver.ImportId` (the external TMS GUID used for QM integration). Run this job before processing QM webhooks to ensure drivers exist locally.
+
+    **`tms-import:trucks`** — calls `ExecuteImportTrucksAsync()`. Fetches truck/tractor records and updates the local database.
+
+    **`tms-import:trailers`** — calls `ExecuteImportTrailersAsync()`. Fetches trailer records and updates the local database.
+
+    **DI registration:**
+
+    ```csharp
+    // src/UpdaterAgent.Application/Dependencies.cs
+    services.AddScoped<ILoadJob, LoadJob>();
+    services.AddScoped<ILogisticsCoreImportJob, LogisticsCoreImportJob>();
+    ```
+  </Accordion>
+
+  <Accordion title="ELD position jobs — import and cleanup">
+    **Implementation:** `src/UpdaterAgent.Application/BackgroundJobs/LogisticsCore/LogisticsCoreImportJob.cs`
+
+    **`eld-import:positions`** (`*/25 * * * *`) — calls `ExecuteImportCurrentPositionAsync()`. Connects to Zippy GPS, retrieves current positions for all tracked vehicles, and stores each record with a timestamp. Runs every 25 minutes to maintain near-real-time position data.
+
+    **`eld-clear:positions`** (`0 0 * * *`) — calls `ClearUnnecessaryPositionsAsync()`. Deletes all `EldPosition` records older than 72 hours each day at midnight UTC. This prevents unbounded database growth while retaining three days of history for ETA calculations.
+  </Accordion>
+
+  <Accordion title="Notification jobs — load info and sleep timer">
+    **Load info — `send:load-info`** (`0 */1 * * *`)
+
+    **Implementation:** `src/UpdaterAgent.Application/BackgroundJobs/LoadInfo/LoadJob.cs` — `NewExecuteSendInfoMessageAsync()`
+
+    Sends formatted load details to drivers via Telegram every hour. Only sends messages for loads with a pickup appointment within the next 2 hours. Respects per-company notification interval settings stored in `NotificationSetting`. Tracks `LastRunnedAt` in the `BackgroundJob` entity to avoid duplicate messages across runs.
+
+    **Sleep timer — `check:sleep-timer-expiry`** (`*/1 * * * *`)
+
+    **Implementation:** `src/UpdaterAgent.Application/BackgroundJobs/SleepTimer/SleepTimerJob.cs` — `ExecuteCheckExpiredTimersAsync()`
+
+    Runs every minute and checks all active sleep timers. When a timer has expired and has not yet been notified, the job:
+
+    1. Sends a Telegram message to the driver's group
+    2. Creates a high-priority ticket
+    3. Sends notifications to the Updater department
+    4. Notifies the assigned dispatcher
+    5. Marks the timer as notified to prevent duplicate alerts
+
+    **DI registration:**
+
+    ```csharp
+    services.AddScoped<ISleepTimerJob, SleepTimerJob>();
+    ```
+  </Accordion>
+
+  <Accordion title="Driver monitoring — stationary driver check">
+    **Implementation:** `src/UpdaterAgent.Application/BackgroundJobs/LoadInfo/LoadJob.cs` — `ExecuteDriverMonitoringAsync()`
+
+    **Job ID:** `check:stationary-driver` — schedule `0 */3 * * *` (every 3 hours)
+
+    Finds all loads in `InTransit` status across all companies, checks the assigned driver's current ELD position, and determines whether the driver has not moved within the expected window. When a driver is found to be stationary, the job sends notifications to dispatchers and updaters.
+  </Accordion>
+
+  <Accordion title="QM webhook jobs — renewal and on-demand processor">
+    **Renewal — `qm-webhook:renew-subscriptions`** (`0 0 */2 * *`)
+
+    **Implementation:** `src/UpdaterAgent.Application/BackgroundJobs/QmWebhook/QmWebhookRenewalJob.cs` — `RenewAllSubscriptionsAsync()`
+
+    QuickManage webhook subscriptions expire and must be renewed to keep receiving events. Every two days this job:
+
+    1. Retrieves all QM webhook subscriptions from the database
+    2. Fetches TMS settings and generates a fresh QM access token per company
+    3. Calls the QM API to renew each subscription
+    4. Updates `LastRenewedAt` in the database
+
+    **On-demand processor**
+
+    **Implementation:** `src/UpdaterAgent.Application/BackgroundJobs/QmWebhook/QmWebhookProcessorJob.cs` — `ProcessWebhookAsync(long companyId, QmWebhookPayload payload)`
+
+    Triggered immediately when a QM webhook is received (not on a schedule). Handles two event types: `load.created` and `load.updated`. Processing steps:
+
+    1. Validates the event type
+    2. Fetches full trip details from the QM API
+    3. Resolves or creates the broker by `ImportId` (uses `SemaphoreSlim` to prevent duplicate broker creation under concurrent webhooks)
+    4. Looks up drivers by `Driver.ImportId` (QM GUID) and stores `Driver.Id` — not `ImportId` — in `Stop.AssignedDriverIds`
+    5. Creates or updates the load, maps all stops, and applies the correct status mapping
+
+    **DI registration:**
+
+    ```csharp
+    services.AddScoped<IQmWebhookProcessorJob, QmWebhookProcessorJob>();
+    services.AddScoped<IQmWebhookRenewalJob, QmWebhookRenewalJob>();
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## BackgroundJob entity
+
+The `BackgroundJob` entity in `src/UpdaterAgent.Domain/Entities/BackgroundJob.cs` supports per-company job customization:
+
+```csharp
+public class BackgroundJob
+{
+    public long Id { get; set; }
+    public long CompanyId { get; set; }
+    public string JobName { get; set; }
+    public DateTime? LastRunnedAt { get; set; }
+    public long? NotificationSettingId { get; set; }
+    public NotificationSetting? NotificationSetting { get; set; }
+}
+```
+
+`LastRunnedAt` is updated after each successful run and is used by the `send:load-info` job to enforce per-company notification intervals. `NotificationSettingId` links to the company's configured interval, allowing different companies to receive load info messages at different frequencies.
+
+## Registration
+
+All jobs are registered in `JobsRegistrar.cs`:
+
+```csharp
+// src/UpdaterAgent.Application/BackgroundJobs/JobsRegistrar.cs
+RecurringJob.AddOrUpdate<ILoadJob>("tms-import:load",
+    x => x.ExecuteImportLoadAsync(), "0 */3 * * *");
+
+RecurringJob.AddOrUpdate<ILogisticsCoreImportJob>("tms-import:drivers",
+    x => x.ExecuteImportDriversAsync(), "0 */3 * * *");
+
+RecurringJob.AddOrUpdate<ILogisticsCoreImportJob>("eld-import:positions",
+    x => x.ExecuteImportCurrentPositionAsync(), "*/25 * * * *");
+
+RecurringJob.AddOrUpdate<IQmWebhookRenewalJob>("qm-webhook:renew-subscriptions",
+    x => x.RenewAllSubscriptionsAsync(), "0 0 */2 * *");
+
+// ... and so on for all 11 jobs
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Job not running">
+    1. Open the Hangfire dashboard at `/hangfire` (admin role required) and check whether the job appears in the **Recurring** tab and has a next execution time.
+    2. Verify the job is registered in `JobsRegistrar.cs` with the correct job ID and CRON expression.
+    3. Check the current environment. Jobs are disabled in the Testing environment and will not run regardless of registration.
+    4. Look for the job in the **Failed** tab to see exception details from previous runs.
+  </Accordion>
+
+  <Accordion title="QM webhook issues">
+    If QuickManage events stop arriving or loads are not being created or updated from QM:
+
+    1. Check the `qm-webhook:renew-subscriptions` job in the Hangfire dashboard. Confirm it ran successfully within the past 2 days.
+    2. Query the database for `LastRenewedAt` on QM webhook subscription records. A stale timestamp indicates the renewal job failed.
+    3. Verify that TMS settings for each affected company contain valid QM credentials (client ID, client secret, base URL).
+    4. On-demand webhook processing jobs appear in the Hangfire **Enqueued** and **Processing** tabs — check there if events are being received but not processed.
+  </Accordion>
+
+  <Accordion title="Driver assignment problems in QM loads">
+    If stops created from QM webhooks show incorrect or missing driver assignments:
+
+    1. Confirm the `tms-import:drivers` job has run successfully and the drivers exist in the local database with correct `Driver.ImportId` values.
+    2. The QM webhook processor looks up drivers by `Driver.ImportId` (the QM driver GUID). If `ImportId` does not match, the driver lookup fails silently and the stop is created without an assigned driver.
+    3. Check `Stop.AssignedDriverIds` in the database. Values must be `Driver.Id.ToString()` (local integer PK), **not** the `ImportId` GUID. If you see GUIDs in this field, the LR-1053 driver ID convention was not applied.
+    4. Re-run `tms-import:drivers` manually via the Hangfire dashboard to refresh driver data before re-processing the webhook.
+  </Accordion>
+</AccordionGroup>
+
+<Warning>
+  Never add `[AutomaticRetry]` with a non-zero `Attempts` value to TMS or ELD import jobs. Automatic retries on failed import jobs can produce duplicate records and cascading errors across all tenant companies.
+</Warning>

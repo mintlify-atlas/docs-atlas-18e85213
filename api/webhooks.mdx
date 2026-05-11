@@ -1,0 +1,251 @@
+---
+title: "Webhook integration: QuickManage, HMAC, and imports"
+description: "Reference for UpdaterAgent webhooks: HMAC-SHA256 verification, QuickManage subscriptions, UTrackin position imports, and manual QM data sync triggers."
+---
+
+UpdaterAgent acts as a webhook receiver for two external systems: QuickManage (TMS) and Nylas (email). The QuickManage webhook endpoint is publicly accessible but protected with HMAC-SHA256 signature verification using a shared secret — no JWT is required because QuickManage initiates the request. Subscriptions to QuickManage are managed via a dedicated controller and are automatically renewed every 48 hours by a background job. This page also covers the UTrackin ELD integration and the manual QuickManage import triggers.
+
+## QmWebhookController — `/api/qm-webhook`
+
+### POST /api/qm-webhook
+
+Receive incoming webhook events from QuickManage. This endpoint requires no JWT authentication — QuickManage signs each request with an HMAC-SHA256 digest instead.
+
+**Authentication:** None (HMAC-SHA256 verified via `X-QM-Signature` header)
+
+**Supported events**
+
+| Event | Description |
+|-------|-------------|
+| `load.created` | A new load was created in QuickManage |
+| `load.updated` | An existing load was updated in QuickManage |
+
+**Request headers**
+
+<ParamField header="X-QM-Signature" type="string" required>
+  HMAC-SHA256 hex digest of the raw request body, signed with the shared webhook secret configured in your TMS settings.
+</ParamField>
+
+<ParamField header="Content-Type" type="string" required>
+  Must be `application/json`.
+</ParamField>
+
+**Request body**
+
+<ParamField body="event" type="string" required>
+  The event type (e.g., `load.created`, `load.updated`).
+</ParamField>
+
+<ParamField body="payload" type="object" required>
+  The event-specific payload containing the load data from QuickManage.
+</ParamField>
+
+```json Example payload (load.updated)
+{
+  "event": "load.updated",
+  "payload": {
+    "tripNumber": "12345",
+    "status": "InTransit",
+    "driverId": "qm-driver-guid-abc"
+  }
+}
+```
+
+**HMAC verification**
+
+UpdaterAgent recomputes the signature on every inbound request. If the computed digest does not match the `X-QM-Signature` header, the request is rejected with `401 Unauthorized`.
+
+```bash Verify signature (example)
+echo -n '<raw-request-body>' | openssl dgst -sha256 -hmac '<your-shared-secret>'
+```
+
+<Warning>
+  Never expose the `/api/qm-webhook` endpoint without valid HMAC verification. Disabling signature checking would allow any caller to inject arbitrary load events into your system.
+</Warning>
+
+---
+
+## QmWebhookSubscriptionController — `/api/qm-webhook-subscriptions`
+
+Manage your QuickManage webhook subscriptions. A subscription tells QuickManage which URL to send events to. Subscriptions must be renewed periodically — UpdaterAgent does this automatically every 48 hours via the `QmWebhookRenewal` background job.
+
+### GET /api/qm-webhook-subscriptions
+
+List all active QuickManage webhook subscriptions for the current company.
+
+**Required permission:** `QmWebhook.View`
+
+```bash cURL
+curl https://your-domain.com/api/qm-webhook-subscriptions \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+```json Response
+{
+  "items": [
+    {
+      "id": 1,
+      "callbackUrl": "https://your-domain.com/api/qm-webhook",
+      "expiresAt": "2026-05-13T10:00:00Z",
+      "events": ["load.created", "load.updated"]
+    }
+  ]
+}
+```
+
+---
+
+### POST /api/qm-webhook-subscriptions
+
+Create a new QuickManage webhook subscription. UpdaterAgent will register the provided callback URL with the QuickManage API.
+
+**Required permission:** `QmWebhook.Create`
+
+<ParamField body="callbackUrl" type="string" required>
+  The HTTPS URL QuickManage should POST events to (must be publicly reachable).
+</ParamField>
+
+<ParamField body="events" type="array" required>
+  List of event types to subscribe to (e.g., `["load.created", "load.updated"]`).
+</ParamField>
+
+```bash cURL
+curl -X POST https://your-domain.com/api/qm-webhook-subscriptions \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "callbackUrl": "https://your-domain.com/api/qm-webhook",
+    "events": ["load.created", "load.updated"]
+  }'
+```
+
+---
+
+### PUT /api/qm-webhook-subscriptions/\{id\}/renew
+
+Manually renew a webhook subscription before it expires. The background job renews subscriptions automatically every 48 hours, but you can trigger a renewal at any time using this endpoint.
+
+**Required permission:** `QmWebhook.Update`
+
+<ParamField path="id" type="number" required>
+  The subscription ID to renew.
+</ParamField>
+
+```bash cURL
+curl -X PUT https://your-domain.com/api/qm-webhook-subscriptions/1/renew \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### DELETE /api/qm-webhook-subscriptions/\{id\}
+
+Delete a webhook subscription and deregister it from QuickManage.
+
+**Required permission:** `QmWebhook.Delete`
+
+<ParamField path="id" type="number" required>
+  The subscription ID to delete.
+</ParamField>
+
+<Note>
+  Webhook subscriptions are automatically renewed every 2 days by the `QmWebhookRenewal` Hangfire background job. You only need to use `PUT /{id}/renew` manually if a subscription is about to expire and the background job has not yet run.
+</Note>
+
+---
+
+## UTruckInController — `/api/utruckin`
+
+UTrackin ELD integration operations. Use these endpoints to manually trigger vehicle position imports or verify the ELD connection.
+
+### POST /api/utruckin/import-positions
+
+Manually trigger an import of vehicle positions from UTrackin. This is normally handled by the `LogisticsCoreImport` background job every 25 minutes.
+
+**Required permission:** `EldImport.Execute`
+
+```bash cURL
+curl -X POST https://your-domain.com/api/utruckin/import-positions \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### POST /api/utruckin/test-connection
+
+Test the current UTrackin ELD connection using the credentials stored in your ELD settings.
+
+**Required permission:** `EldSettings.View`
+
+```bash cURL
+curl -X POST https://your-domain.com/api/utruckin/test-connection \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+```json Response (success)
+{ "success": true, "message": "UTrackin connection verified." }
+```
+
+---
+
+## QuickManageController — `/api/quickmanage`
+
+Manual import triggers for QuickManage TMS data. These endpoints let you immediately pull data from QuickManage outside the regular 3-hour background import cycle — useful after initial setup or after correcting data in QuickManage.
+
+All endpoints require the `TmsImport.Execute` permission, except `test-connection` which requires `TmsSettings.View`.
+
+<Steps>
+  <Step title="Test the connection">
+    Verify your credentials are valid before triggering an import.
+
+    ```bash cURL
+    curl -X POST https://your-domain.com/api/quickmanage/test-connection \
+      -H "Authorization: Bearer <accessToken>"
+    ```
+  </Step>
+  <Step title="Import drivers">
+    Pull the latest driver roster from QuickManage.
+
+    ```bash cURL
+    curl -X POST https://your-domain.com/api/quickmanage/import-drivers \
+      -H "Authorization: Bearer <accessToken>"
+    ```
+  </Step>
+  <Step title="Import trucks and trailers">
+    Sync your vehicle fleet.
+
+    ```bash cURL
+    curl -X POST https://your-domain.com/api/quickmanage/import-trucks \
+      -H "Authorization: Bearer <accessToken>"
+
+    curl -X POST https://your-domain.com/api/quickmanage/import-trailers \
+      -H "Authorization: Bearer <accessToken>"
+    ```
+  </Step>
+  <Step title="Import brokers and loads">
+    Pull broker profiles and active loads.
+
+    ```bash cURL
+    curl -X POST https://your-domain.com/api/quickmanage/import-brokers \
+      -H "Authorization: Bearer <accessToken>"
+
+    curl -X POST https://your-domain.com/api/quickmanage/import-loads \
+      -H "Authorization: Bearer <accessToken>"
+    ```
+  </Step>
+</Steps>
+
+**All manual import endpoints**
+
+| Method | Endpoint | Permission | Description |
+|--------|----------|------------|-------------|
+| POST | `/api/quickmanage/import-drivers` | `TmsImport.Execute` | Import drivers from QuickManage |
+| POST | `/api/quickmanage/import-trucks` | `TmsImport.Execute` | Import trucks from QuickManage |
+| POST | `/api/quickmanage/import-trailers` | `TmsImport.Execute` | Import trailers from QuickManage |
+| POST | `/api/quickmanage/import-brokers` | `TmsImport.Execute` | Import brokers from QuickManage |
+| POST | `/api/quickmanage/import-loads` | `TmsImport.Execute` | Import loads from QuickManage |
+| POST | `/api/quickmanage/test-connection` | `TmsSettings.View` | Test the QuickManage API connection |
+
+<Info>
+  The regular QuickManage background import runs every 3 hours automatically. Manual triggers are provided for on-demand synchronization and initial data bootstrapping.
+</Info>

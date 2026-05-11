@@ -1,0 +1,372 @@
+---
+title: "Drivers API: manage driver profiles and tracking"
+description: "REST API reference for drivers in UpdaterAgent TMS. Manage profiles, retrieve ELD position, control sleep timers, and access dispatcher load endpoints."
+---
+
+The Drivers API manages the driver roster, providing endpoints to create and update driver profiles, retrieve current ELD-sourced position data, and control the sleep timer background job. Driver records use a local primary key (`Driver.Id`) for all internal operations — this is distinct from the `ImportId` field used only for synchronization with external TMS systems like QuickManage. The API also exposes dispatcher-specific endpoints under `/api/dispatchers`.
+
+**Base URL:** `/api/drivers`
+
+**Required permission (minimum):** `Drivers.View`
+
+---
+
+## Driver ID convention
+
+<Warning>
+  Always use `Driver.Id` (the local database primary key, type `long`) in API calls. The `ImportId` field is an external TMS GUID used exclusively for import and sync operations — passing it to endpoints that expect `Driver.Id` will result in unmatched records. This applies everywhere driver IDs are referenced, including `Stop.assignedDriverIds`.
+</Warning>
+
+---
+
+## Endpoints
+
+### GET /api/drivers
+
+List all drivers with pagination. Requires `Drivers.View`.
+
+**Query parameters**
+
+<ParamField query="page" type="number">
+  Page number, 1-indexed. Defaults to `1`.
+</ParamField>
+
+<ParamField query="pageSize" type="number">
+  Items per page. Defaults to `20`, maximum `100`.
+</ParamField>
+
+<ParamField query="sortBy" type="string">
+  Field name to sort by (e.g., `name`, `status`).
+</ParamField>
+
+<ParamField query="sortDirection" type="string">
+  Sort direction: `asc` or `desc`.
+</ParamField>
+
+<ParamField query="search" type="string">
+  Text search across driver name and phone fields.
+</ParamField>
+
+<ParamField query="status" type="string">
+  Filter by driver status.
+</ParamField>
+
+```bash cURL
+curl "https://your-domain.com/api/drivers?page=1&pageSize=20" \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+```json Response
+{
+  "items": [
+    {
+      "id": 42,
+      "name": "James Carter",
+      "phone": "+1-555-0198",
+      "status": "Active",
+      "groupLinkId": 5
+    }
+  ],
+  "totalCount": 88,
+  "page": 1,
+  "pageSize": 20,
+  "totalPages": 5
+}
+```
+
+---
+
+### GET /api/drivers/{id}
+
+Get a single driver's full profile. Requires `Drivers.View`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The driver's local database ID (`Driver.Id`).
+</ParamField>
+
+```bash cURL
+curl https://your-domain.com/api/drivers/42 \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+```json Response
+{
+  "id": 42,
+  "name": "James Carter",
+  "phone": "+1-555-0198",
+  "status": "Active",
+  "groupLinkId": 5,
+  "importId": "d7a2f3e1-..."
+}
+```
+
+---
+
+### POST /api/drivers
+
+Create a new driver record. Requires `Drivers.Create`.
+
+**Request body**
+
+<ParamField body="name" type="string" required>
+  Driver's full name.
+</ParamField>
+
+<ParamField body="phone" type="string">
+  Driver's phone number.
+</ParamField>
+
+<ParamField body="status" type="string">
+  Driver status (e.g., `Active`, `Inactive`).
+</ParamField>
+
+<ParamField body="groupLinkId" type="number">
+  ID of the Telegram group link assigned to this driver. See [GroupLinks](/api/trucks-trailers#group-links).
+</ParamField>
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://your-domain.com/api/drivers \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Maria Gonzalez",
+    "phone": "+1-555-0211",
+    "status": "Active",
+    "groupLinkId": 5
+  }'
+```
+
+```json Response
+{
+  "id": 91,
+  "name": "Maria Gonzalez",
+  "phone": "+1-555-0211",
+  "status": "Active",
+  "groupLinkId": 5
+}
+```
+
+</CodeGroup>
+
+---
+
+### PUT /api/drivers/{id}
+
+Update a driver's profile. Requires `Drivers.Update`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The driver's local database ID.
+</ParamField>
+
+**Request body**
+
+The body accepts the same fields as `POST /api/drivers`. Include only the fields you want to change.
+
+```bash cURL
+curl -X PUT https://your-domain.com/api/drivers/42 \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"phone": "+1-555-0201", "status": "Inactive"}'
+```
+
+---
+
+### DELETE /api/drivers/{id}
+
+Delete a driver record. Requires `Drivers.Delete`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The driver's local database ID.
+</ParamField>
+
+```bash cURL
+curl -X DELETE https://your-domain.com/api/drivers/42 \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### GET /api/drivers/{id}/loads
+
+Get loads currently or previously assigned to a driver. Requires `Loads.View`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The driver's local database ID.
+</ParamField>
+
+```bash cURL
+curl https://your-domain.com/api/drivers/42/loads \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### GET /api/drivers/{id}/current-position
+
+Get the driver's current position as reported by the ELD integration (Zippy, Samsara, UTrackin, etc.). Requires `Drivers.View`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The driver's local database ID.
+</ParamField>
+
+```bash cURL
+curl https://your-domain.com/api/drivers/42/current-position \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+**Response**
+
+<ResponseField name="latitude" type="number">
+  Current latitude coordinate.
+</ResponseField>
+
+<ResponseField name="longitude" type="number">
+  Current longitude coordinate.
+</ResponseField>
+
+<ResponseField name="speed" type="number">
+  Vehicle speed in mph at the time of the last ELD position record.
+</ResponseField>
+
+<ResponseField name="heading" type="number">
+  Vehicle bearing in degrees (0–360).
+</ResponseField>
+
+<ResponseField name="vehicleId" type="string">
+  ELD vehicle identifier.
+</ResponseField>
+
+<ResponseField name="recordedAt" type="string">
+  ISO 8601 timestamp when the ELD position was recorded.
+</ResponseField>
+
+```json Response
+{
+  "latitude": 32.7767,
+  "longitude": -96.7970,
+  "speed": 62,
+  "heading": 185,
+  "vehicleId": "VH-00312",
+  "recordedAt": "2025-06-10T14:05:00Z"
+}
+```
+
+<Info>
+  ELD positions are imported on a schedule (every 25 minutes for Zippy/Samsara). The `recordedAt` timestamp reflects when the ELD device recorded the position, not when it was imported into UpdaterAgent.
+</Info>
+
+---
+
+### POST /api/drivers/{id}/sleep-timer
+
+Start a sleep timer for a driver. When the timer expires, a background job fires an alert notification. Requires `Drivers.Update`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The driver's local database ID.
+</ParamField>
+
+**Request body**
+
+<ParamField body="durationMinutes" type="number" required>
+  Sleep duration in minutes. The alert fires when this period elapses.
+</ParamField>
+
+```bash cURL
+curl -X POST https://your-domain.com/api/drivers/42/sleep-timer \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"durationMinutes": 480}'
+```
+
+<Tip>
+  The `SleepTimerCheck` background job runs every minute to detect expired timers. Alerts are sent via Telegram to the driver's assigned group.
+</Tip>
+
+---
+
+### DELETE /api/drivers/{id}/sleep-timer
+
+Cancel an active sleep timer for a driver before it expires. Requires `Drivers.Update`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The driver's local database ID.
+</ParamField>
+
+```bash cURL
+curl -X DELETE https://your-domain.com/api/drivers/42/sleep-timer \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+## Dispatcher endpoints
+
+Dispatcher-specific operations are available under `/api/dispatchers`. These endpoints use the same JWT authentication and return data scoped to the current tenant.
+
+### GET /api/dispatchers
+
+List all dispatchers in the tenant. Requires `Users.View`.
+
+```bash cURL
+curl https://your-domain.com/api/dispatchers \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+### GET /api/dispatchers/{id}/loads
+
+Get all loads assigned to a specific dispatcher. Requires `Loads.View`.
+
+**Path parameters**
+
+<ParamField path="id" type="number" required>
+  The dispatcher's user ID.
+</ParamField>
+
+```bash cURL
+curl https://your-domain.com/api/dispatchers/15/loads \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+---
+
+## Driver fields reference
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | number | Local database primary key — use this in all API calls |
+| `name` | string | Driver's full name |
+| `phone` | string | Contact phone number |
+| `status` | string | Driver status (e.g., `Active`, `Inactive`) |
+| `groupLinkId` | number | Linked Telegram group for notifications |
+| `importId` | string | External TMS GUID — used only for QuickManage sync, not for API calls |
+
+---
+
+## Permissions summary
+
+| Permission | Grants access to |
+|---|---|
+| `Drivers.View` | GET endpoints, current position |
+| `Drivers.Create` | `POST /api/drivers` |
+| `Drivers.Update` | PUT, sleep timer start/cancel |
+| `Drivers.Delete` | `DELETE /api/drivers/{id}` |
+| `Loads.View` | Driver loads, dispatcher loads |
+| `Users.View` | Dispatcher list |

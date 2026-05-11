@@ -1,0 +1,114 @@
+---
+title: "Background job processing with Hangfire in UpdaterAgent"
+description: "UpdaterAgent uses Hangfire with PostgreSQL storage to run 11+ recurring jobs for TMS imports, ELD syncs, notifications, and driver monitoring."
+---
+
+UpdaterAgent relies on Hangfire to run all background work on a schedule. Jobs handle critical automation like importing loads, drivers, trucks, trailers, and brokers from TMS every three hours; syncing real-time vehicle positions from ELD providers every 25 minutes; sending Telegram notifications to drivers; and monitoring driver statuses. Without these recurring jobs, the system would require manual intervention for operations that need to run continuously and reliably across all tenant companies.
+
+## Hangfire setup
+
+Hangfire is configured in `src/UpdaterAgent.Api/Dependencies.cs` using the Npgsql PostgreSQL storage provider. All Hangfire tables are created automatically in the `background` schema on first startup. Jobs are registered via `JobsRegistrar.RegisterRecurringJobs()` in `Program.cs` and only run outside the Testing environment.
+
+<Info>
+  The Hangfire dashboard is available at `/hangfire`. Access requires the admin role. Use it to monitor job history, requeue failed jobs, and inspect execution logs.
+</Info>
+
+## Job categories
+
+### TMS import jobs
+
+These five jobs sync master data from the TMS/LogisticsCore system every three hours. Each job iterates all tenant companies and updates local records.
+
+| Job ID | Schedule | Purpose |
+|---|---|---|
+| `tms-import:load` | `0 */3 * * *` | Import loads from TMS |
+| `tms-import:brokers` | `0 */3 * * *` | Import brokers from TMS |
+| `tms-import:drivers` | `0 */3 * * *` | Import drivers from TMS |
+| `tms-import:trucks` | `0 */3 * * *` | Import trucks from TMS |
+| `tms-import:trailers` | `0 */3 * * *` | Import trailers from TMS |
+
+### ELD position jobs
+
+Position data from Zippy GPS is imported every 25 minutes and cleaned up daily at midnight to prevent database bloat.
+
+| Job ID | Schedule | Purpose |
+|---|---|---|
+| `eld-import:positions` | `*/25 * * * *` | Import current ELD positions from Zippy GPS |
+| `eld-clear:positions` | `0 0 * * *` | Delete position records older than 72 hours |
+
+### Notification jobs
+
+These jobs keep drivers and dispatchers informed about load status and driver availability.
+
+| Job ID | Schedule | Purpose |
+|---|---|---|
+| `send:load-info` | `0 */1 * * *` | Send formatted load details to drivers via Telegram (pickup within 2 hours) |
+| `check:sleep-timer-expiry` | `*/1 * * * *` | Check for expired driver sleep timers and notify dispatchers |
+
+The `send:load-info` job respects per-company notification interval settings stored in the `BackgroundJob` entity. It tracks `LastRunnedAt` per company to avoid sending duplicate messages.
+
+### QM webhook jobs
+
+QuickManage webhook subscriptions expire and must be renewed periodically. A separate processor job handles incoming webhook events on demand.
+
+| Job ID | Schedule | Purpose |
+|---|---|---|
+| `qm-webhook:renew-subscriptions` | `0 0 */2 * *` | Renew all QM webhook subscriptions every 2 days |
+| QM webhook processor | On-demand | Process `load.created` and `load.updated` events from QuickManage |
+
+### Driver monitoring
+
+| Job ID | Schedule | Purpose |
+|---|---|---|
+| `check:stationary-driver` | `0 */3 * * *` | Identify drivers who have not moved during an active InTransit load |
+
+## Required job attributes
+
+Every recurring job in UpdaterAgent must carry two attributes:
+
+```csharp
+[DisableConcurrentExecution(timeoutInSeconds: 300)]
+[AutomaticRetry(Attempts = 0)]
+public async Task ExecuteAsync()
+{
+    // job body
+}
+```
+
+`DisableConcurrentExecution` prevents the same job from running in parallel. The 300-second (5-minute) timeout acts as a deadlock safeguard — if a lock cannot be acquired within that window, the run is skipped.
+
+`AutomaticRetry(Attempts = 0)` disables Hangfire's built-in retry mechanism entirely. Jobs that process data from external TMS or ELD systems can produce cascading errors and duplicate records if retried automatically. The system recovers naturally on the next scheduled run instead.
+
+## Multi-tenant job pattern
+
+Every job iterates through all companies rather than running once per tenant. Before querying tenant-scoped data, each job sets the tenant context via `ITenantContextService`. A failure in one company's iteration does not block processing for others.
+
+```csharp
+foreach (var company in companies)
+{
+    _tenantContextService.SetTenant(company.Id);
+    // process data for this company
+}
+```
+
+## Manual triggers
+
+Two endpoints allow on-demand execution without waiting for a scheduled run. Both are useful for testing or immediate re-processing.
+
+```bash
+POST /api/eta-jobs/calculate
+POST /api/eta-jobs/calculate-all
+```
+
+These are defined in `src/UpdaterAgent.Api/Controllers/EtaBackgroundJobsController.cs`.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Job reference" icon="list" href="/jobs/reference">
+    Complete table of all 11 job IDs, CRON schedules, and detailed descriptions.
+  </Card>
+  <Card title="Integrations overview" icon="plug" href="/integrations/overview">
+    Learn about the TMS, ELD, and webhook providers that these jobs interact with.
+  </Card>
+</CardGroup>

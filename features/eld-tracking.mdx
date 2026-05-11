@@ -1,0 +1,88 @@
+---
+title: "Real-time ELD position tracking in UpdaterAgent TMS"
+description: "Multi-provider ELD integration for vehicle position imports, ETA calculations, delay detection, and stationary driver monitoring across all active loads."
+---
+
+UpdaterAgent integrates with multiple Electronic Logging Device (ELD) providers to import real-time vehicle positions. This position data drives ETA calculations, delay detection, and stationary driver monitoring across all active loads.
+
+<Note>
+ELD provider settings are configured per company under `/api/eld-settings`. Each company can connect to a different ELD provider, and the import jobs run against each company's configured credentials independently.
+</Note>
+
+## Supported ELD providers
+
+| Provider | Authentication | Notes |
+|---|---|---|
+| **Zippy** | API credentials | Primary provider; positions polled every 25 minutes |
+| **Samsara** | API token | Alternative ELD platform |
+| **UTrackin** | OAuth 2.0 | Vehicle tracking with OAuth authentication flow |
+| **LevelELD** | API credentials | Level ELD tracking |
+| **OnTimeLogs** | API credentials | OnTime driver log integration |
+
+## EldPosition entity
+
+Each position record imported from an ELD provider is stored as an `EldPosition`:
+
+| Field | Type | Description |
+|---|---|---|
+| `VehicleId` | string | Provider-side vehicle identifier |
+| `Latitude` | decimal | GPS latitude |
+| `Longitude` | decimal | GPS longitude |
+| `Speed` | decimal | Speed at time of recording |
+| `Heading` | decimal | Direction of travel in degrees |
+| `RecordedAt` | datetime | Timestamp from the ELD provider |
+
+## How positions are imported
+
+The `eld-import:positions` background job runs every 25 minutes (CRON: `*/25 * * * *`). For each company, it:
+
+1. Reads ELD settings to determine the configured provider and credentials
+2. Calls the provider API to retrieve current vehicle positions
+3. Stores new `EldPosition` records in the database, tagged with a timestamp
+
+The import job uses `[DisableConcurrentExecution(timeoutInSeconds: 300)]` to prevent overlapping runs.
+
+## Data retention
+
+The `eld-clear:positions` job runs daily at midnight UTC (CRON: `0 0 * * *`). It deletes all `EldPosition` records older than 72 hours. This prevents database bloat while retaining enough history for ETA calculations, delay checks, and stationary driver detection.
+
+## ETA calculation
+
+When a load is in `InTransit` status, UpdaterAgent calculates ETA to the current heading stop using the driver's most recent ELD position as the starting point.
+
+The routing strategy is:
+
+1. **OSRM** — primary, free, self-hosted OpenStreetMap routing
+2. **Google Maps** — fallback when OSRM distance exceeds 2× the straight-line distance or when OSRM is unavailable
+
+The calculated ETA is stored on the load and updated each time new positions are imported. Access the current ETA via:
+
+```http
+GET /api/loads/{id}/eta
+```
+
+Or retrieve it as part of the update board response, which includes `OsrmRemainingDuration`, `Eta`, and destination address fields.
+
+## Getting the current driver position
+
+```http
+GET /api/drivers/{id}/current-position
+```
+
+Returns the most recent `EldPosition` record for the truck associated with the driver. If no position has been imported within the last 25 minutes, the data may be stale — the response timestamp (`RecordedAt`) indicates when the position was last recorded.
+
+## Delay detection
+
+After each position import, the system compares the driver's actual location to the expected route. A **deviation percentage** is calculated to measure how far off-route the driver is.
+
+If the deviation exceeds the configured threshold, or if the projected arrival time falls significantly behind the scheduled `AppointmentDate` at the next stop, the system flags the load as delayed and triggers an alert to the assigned dispatcher.
+
+## Stationary driver monitoring
+
+The `check:stationary-driver` job runs every 3 hours (CRON: `0 */3 * * *`). It:
+
+1. Finds all loads currently in `InTransit` status
+2. Compares the driver's most recent position against their position from the previous check
+3. If the driver has not moved beyond the stationary threshold and the load is active, sends an alert notification to the dispatcher
+
+This check ensures dispatchers are aware of drivers who may be stopped unexpectedly during a load.
